@@ -1578,9 +1578,6 @@ async function submitAndProceed() {
 
   // One ID per attempt for this job's parts request — supports future
   // retry-safe behaviour once a unique constraint exists on parts_requests.
-  // Must be a real UUID: request_batch_id is typed uuid on parts_requests
-  // (see the parts-request.html migration), so a plain string here causes
-  // Postgres to reject the insert with "invalid input syntax for type uuid".
   const batchId = generatePartsBatchId();
 
   try {
@@ -1759,8 +1756,12 @@ function enableNotifications() {
   OneSignalDeferred.push(async function(OneSignal) {
     try {
       await OneSignal.Notifications.requestPermission();
-      document.getElementById('notifPrompt').style.display = 'none';
       if (Notification.permission === 'granted') {
+        // Requesting permission alone isn't enough on OneSignal's v16 SDK —
+        // the device also needs to be explicitly opted in, or it stays
+        // "permission granted" but not actually a subscribed recipient.
+        await OneSignal.User.PushSubscription.optIn();
+        document.getElementById('notifPrompt').style.display = 'none';
         showToast('Notifications enabled!', 'success');
       } else {
         showToast('Notifications not enabled — check browser settings.', 'error');
@@ -1782,12 +1783,11 @@ async function sendIncidentNotification(assetNo, machineType, line, fault, jobId
     const message = 'Asset: ' + assetNo + (machineType ? ' (' + machineType + ')' : '') + ' | ' + fault;
     // Deep-link straight to this job's detail view when we have an id;
     // fall back to the generic app URL if the insert didn't return one.
-    // ⚠ Replace YOUR-PROJECT with your actual Cloudflare Pages domain once deployed.
-   const deepLinkUrl = jobId
-  ? 'https://prestige-bullmer-downtime.<your-subdomain>.workers.dev/?job=' + jobId
-  : 'https://prestige-bullmer-downtime.<your-subdomain>.workers.dev/';
+    const deepLinkUrl = jobId
+      ? 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/?job=' + jobId
+      : 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/';
 
-    // Calls our own Pages Function, which proxies to OneSignal server-side —
+    // Calls our own Worker route, which proxies to OneSignal server-side —
     // the REST API key never touches the browser.
     const res = await fetch(API_BASE + '/notify', {
       method: 'POST',
