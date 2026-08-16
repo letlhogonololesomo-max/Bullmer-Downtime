@@ -8,5 +8,5 @@ binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "pmt-bullmer"
-database_id = "21b92dc5-3089-436d-8c86-462f40583e3d"
+database_name = "bullmer"
+database_id = "985b05ab-3349-4c96-a6d0-11ab7e04abac"
