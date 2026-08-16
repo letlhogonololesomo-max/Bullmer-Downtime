@@ -201,13 +201,26 @@ async function postPartsReturns(request, env) {
 
 // ── notify (OneSignal proxy) ─────────────────────────────────────────────
 async function postNotify(request, env) {
+  // Fail with a clear, specific error if the secrets aren't actually bound —
+  // rather than sending "Key undefined" to OneSignal and getting back a
+  // generic 401 that looks identical to a real auth failure.
+  if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_REST_API_KEY) {
+    return json({
+      error: 'Missing OneSignal config in Worker environment',
+      hasAppId: !!env.ONESIGNAL_APP_ID,
+      hasRestApiKey: !!env.ONESIGNAL_REST_API_KEY
+    }, 500);
+  }
+
   const { title, message, url } = await request.json();
 
   const res = await fetch('https://onesignal.com/api/v1/notifications', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Basic ${env.ONESIGNAL_REST_API_KEY}`
+      // Newer OneSignal REST API keys (format: os_v2_app_...) require the
+      // "Key" auth scheme, not "Basic" — Basic is only for the old key format.
+      'Authorization': `Key ${env.ONESIGNAL_REST_API_KEY}`
     },
     body: JSON.stringify({
       app_id: env.ONESIGNAL_APP_ID,
