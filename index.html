@@ -322,6 +322,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   OneSignalDeferred.push(async function(OneSignal) {
     await OneSignal.init({
       appId: "ab4bd890-b39e-43b3-96e9-1683db45d695",
+      serviceWorkerPath: "OneSignalSDKWorker.js",
+      serviceWorkerParam: { scope: "/" },
      });
   });
 </script>
