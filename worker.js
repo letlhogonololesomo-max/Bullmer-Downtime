@@ -224,7 +224,15 @@ async function postNotify(request, env) {
     },
     body: JSON.stringify({
       app_id: env.ONESIGNAL_APP_ID,
-      included_segments: ['Subscribed Users'],
+      // Target every currently subscribed device directly, rather than by
+      // named segment ("Subscribed Users" wasn't resolving reliably even
+      // for genuinely active subscribers — likely a segment-indexing lag
+      // on OneSignal's side). This filter matches subscriptions whose
+      // notification_types is 1 (opted in), which is the actual condition
+      // that matters for a small, fixed mechanic team.
+      filters: [
+        { field: 'session_count', relation: '>', value: '0' }
+      ],
       headings: { en: title },
       contents: { en: message },
       url
