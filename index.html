@@ -1784,9 +1784,9 @@ async function sendIncidentNotification(assetNo, machineType, line, fault, jobId
     // Deep-link straight to this job's detail view when we have an id;
     // fall back to the generic app URL if the insert didn't return one.
     // ⚠ Replace YOUR-PROJECT with your actual Cloudflare Pages domain once deployed.
-    const deepLinkUrl = jobId
-      ? 'https://YOUR-PROJECT.pages.dev/downtime.html?job=' + jobId
-      : 'https://YOUR-PROJECT.pages.dev/downtime.html';
+   const deepLinkUrl = jobId
+  ? 'https://prestige-bullmer-downtime.<your-subdomain>.workers.dev/?job=' + jobId
+  : 'https://prestige-bullmer-downtime.<your-subdomain>.workers.dev/';
 
     // Calls our own Pages Function, which proxies to OneSignal server-side —
     // the REST API key never touches the browser.
