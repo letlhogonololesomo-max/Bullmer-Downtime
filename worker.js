@@ -16,13 +16,20 @@ function json(data, status = 200) {
 async function getMasterData(request, env) {
   const url = new URL(request.url);
   const assetNo = url.searchParams.get('asset_no');
-  if (!assetNo) return json({ error: 'asset_no required' }, 400);
 
-  const row = await env.DB.prepare(
-    'SELECT asset_type FROM master_data WHERE asset_no = ?'
-  ).bind(assetNo).first();
+  if (assetNo) {
+    const row = await env.DB.prepare(
+      'SELECT asset_type FROM master_data WHERE asset_no = ?'
+    ).bind(assetNo).first();
+    return json(row || null);
+  }
 
-  return json(row || null);
+  // No asset_no — return the full asset register (used by PM logging,
+  // Asset Profile search, and the dashboard's asset dropdowns).
+  const { results } = await env.DB.prepare(
+    'SELECT asset_no, asset_type FROM master_data ORDER BY asset_no'
+  ).all();
+  return json(results);
 }
 
 async function postMasterData(request, env) {
@@ -35,6 +42,112 @@ async function postMasterData(request, env) {
     `INSERT INTO master_data (asset_no, asset_type) VALUES (?, ?)
      ON CONFLICT(asset_no) DO UPDATE SET asset_type = excluded.asset_type`
   ).bind(body.asset_no, body.asset_type).run();
+
+  return json({ success: true });
+}
+
+// ── pm_log ───────────────────────────────────────────────────────────────
+async function getPmLog(request, env) {
+  const url = new URL(request.url);
+  const assetNo = url.searchParams.get('asset_no');
+
+  if (assetNo) {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM pm_log WHERE asset_no = ? ORDER BY completed_date DESC`
+    ).bind(assetNo).all();
+    return json(results);
+  }
+
+  // No asset filter — recent PM activity for the dashboard, most recent first.
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM pm_log ORDER BY completed_date DESC LIMIT 500`
+  ).all();
+  return json(results);
+}
+
+async function postPmLog(request, env) {
+  const body = await request.json();
+  const result = await env.DB.prepare(
+    `INSERT INTO pm_log
+      (asset_no, machine_type, location, service_type, completed_by,
+       completed_date, machine_condition, next_due_date, overall_note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    body.asset_no, body.machine_type, body.location, body.service_type,
+    body.completed_by, body.completed_date, body.machine_condition,
+    body.next_due_date || null, body.overall_note || ''
+  ).run();
+
+  return json({ id: result.meta.last_row_id }, 201);
+}
+
+// ── parts_inventory ──────────────────────────────────────────────────────
+async function getPartsInventory(request, env) {
+  const url = new URL(request.url);
+  const location = url.searchParams.get('location');
+
+  const query = location
+    ? env.DB.prepare('SELECT * FROM parts_inventory WHERE location = ? ORDER BY description').bind(location)
+    : env.DB.prepare('SELECT * FROM parts_inventory ORDER BY location, description');
+
+  const { results } = await query.all();
+  return json(results);
+}
+
+// Upsert one part (catalogue add/edit, and CSV import calls this per row).
+async function postPartsInventory(request, env) {
+  const body = await request.json();
+  if (!body.part_no || !body.location) {
+    return json({ error: 'part_no and location required' }, 400);
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO parts_inventory
+      (part_no, location, description, stock_qty, min_qty, machine_type, supplier, draw_number, unit_price, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(part_no, location) DO UPDATE SET
+       description = excluded.description,
+       stock_qty = excluded.stock_qty,
+       min_qty = excluded.min_qty,
+       machine_type = excluded.machine_type,
+       supplier = excluded.supplier,
+       draw_number = excluded.draw_number,
+       unit_price = excluded.unit_price,
+       updated_at = excluded.updated_at`
+  ).bind(
+    body.part_no, body.location, body.description || '',
+    body.stock_qty || 0, body.min_qty || 0, body.machine_type || null,
+    body.supplier || null, body.draw_number || null,
+    body.unit_price != null ? body.unit_price : null,
+    new Date().toISOString()
+  ).run();
+
+  return json({ success: true });
+}
+
+// Quick stock-quantity-only adjustment (Adjust Stock screen).
+async function patchPartsInventory(request, env) {
+  const body = await request.json();
+  if (!body.part_no || !body.location || body.stock_qty == null) {
+    return json({ error: 'part_no, location, and stock_qty required' }, 400);
+  }
+
+  await env.DB.prepare(
+    `UPDATE parts_inventory SET stock_qty = ?, updated_at = ? WHERE part_no = ? AND location = ?`
+  ).bind(body.stock_qty, new Date().toISOString(), body.part_no, body.location).run();
+
+  return json({ success: true });
+}
+
+async function deletePartsInventory(request, env) {
+  const url = new URL(request.url);
+  const partNo = url.searchParams.get('part_no');
+  const location = url.searchParams.get('location');
+  if (!partNo || !location) return json({ error: 'part_no and location required' }, 400);
+
+  await env.DB.prepare(
+    `DELETE FROM parts_inventory WHERE part_no = ? AND location = ?`
+  ).bind(partNo, location).run();
 
   return json({ success: true });
 }
@@ -67,7 +180,27 @@ async function getDowntimeLog(request, env) {
     return json(results);
   }
 
-  return json({ error: 'Specify asset_no+open=1, or mode=mechanic' }, 400);
+  if (mode === 'dashboard') {
+    // Broad reporting query — optional date range, location, and asset
+    // filters, used by the dashboard's Downtime tab and Asset Profile search.
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    const location = url.searchParams.get('location');
+    const filterAsset = url.searchParams.get('asset_no');
+
+    let sql = 'SELECT * FROM downtime_log WHERE 1=1';
+    const binds = [];
+    if (from) { sql += ' AND reported_time >= ?'; binds.push(from); }
+    if (to)   { sql += ' AND reported_time <= ?'; binds.push(to + 'T23:59:59'); }
+    if (location) { sql += ' AND line = ?'; binds.push(location); }
+    if (filterAsset) { sql += ' AND asset_no = ?'; binds.push(filterAsset); }
+    sql += ' ORDER BY reported_time DESC LIMIT 2000';
+
+    const { results } = await env.DB.prepare(sql).bind(...binds).all();
+    return json(results);
+  }
+
+  return json({ error: 'Specify asset_no+open=1, mode=mechanic, or mode=dashboard' }, 400);
 }
 
 async function postDowntimeLog(request, env) {
@@ -109,12 +242,34 @@ async function patchDowntimeLog(request, env, id) {
 async function getPartsRequests(request, env) {
   const url = new URL(request.url);
   const jobCardId = url.searchParams.get('job_card_id');
-  if (!jobCardId) return json({ error: 'job_card_id required' }, 400);
+  const status = url.searchParams.get('status');
+  const assetNo = url.searchParams.get('asset_no');
 
+  if (jobCardId) {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM parts_requests WHERE job_card_id = ?`
+    ).bind(jobCardId).all();
+    return json(results);
+  }
+
+  if (assetNo) {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM parts_requests WHERE asset_no = ? ORDER BY requested_time DESC`
+    ).bind(assetNo).all();
+    return json(results);
+  }
+
+  if (status) {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM parts_requests WHERE status = ? ORDER BY requested_time DESC`
+    ).bind(status).all();
+    return json(results);
+  }
+
+  // No filter — recent requests for the dashboard's "today's issues" view.
   const { results } = await env.DB.prepare(
-    `SELECT * FROM parts_requests WHERE job_card_id = ?`
-  ).bind(jobCardId).all();
-
+    `SELECT * FROM parts_requests ORDER BY requested_time DESC LIMIT 500`
+  ).all();
   return json(results);
 }
 
@@ -157,6 +312,30 @@ async function patchPartsRequests(request, env, id) {
 }
 
 // ── parts_returns ────────────────────────────────────────────────────────
+// ── parts_returns ────────────────────────────────────────────────────────
+async function getPartsReturns(request, env) {
+  const url = new URL(request.url);
+  const awaitingSupplier = url.searchParams.get('awaiting_supplier');
+
+  const query = awaitingSupplier
+    ? env.DB.prepare(`SELECT * FROM parts_returns WHERE supplier_return_status = 'Awaiting supplier return' ORDER BY return_time DESC`)
+    : env.DB.prepare(`SELECT * FROM parts_returns ORDER BY return_time DESC LIMIT 500`);
+
+  const { results } = await query.all();
+  return json(results);
+}
+
+async function patchPartsReturns(request, env, id) {
+  const body = await request.json();
+  if (!body.supplier_return_status) return json({ error: 'supplier_return_status required' }, 400);
+
+  await env.DB.prepare(
+    `UPDATE parts_returns SET supplier_return_status = ? WHERE id = ?`
+  ).bind(body.supplier_return_status, id).run();
+
+  return json({ success: true });
+}
+
 async function postPartsReturns(request, env) {
   const body = await request.json();
 
@@ -272,6 +451,22 @@ export default {
     if (prIdMatch && method === 'PATCH') return patchPartsRequests(request, env, prIdMatch[1]);
 
     if (pathname === '/api/parts-returns' && method === 'POST') return postPartsReturns(request, env);
+    if (pathname === '/api/parts-returns' && method === 'GET') return getPartsReturns(request, env);
+    const prReturnIdMatch = pathname.match(/^\/api\/parts-returns\/(\d+)$/);
+    if (prReturnIdMatch && method === 'PATCH') return patchPartsReturns(request, env, prReturnIdMatch[1]);
+
+    if (pathname === '/api/pm-log') {
+      if (method === 'GET')  return getPmLog(request, env);
+      if (method === 'POST') return postPmLog(request, env);
+    }
+
+    if (pathname === '/api/parts-inventory') {
+      if (method === 'GET')    return getPartsInventory(request, env);
+      if (method === 'POST')   return postPartsInventory(request, env);
+      if (method === 'PATCH')  return patchPartsInventory(request, env);
+      if (method === 'DELETE') return deletePartsInventory(request, env);
+    }
+
     if (pathname === '/api/notify' && method === 'POST') return postNotify(request, env);
 
     // Not an API route — serve the static site (index.html, OneSignalSDKWorker.js)
