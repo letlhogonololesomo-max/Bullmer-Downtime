@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bullmer Dashboard</title>
+<script>
+const MACHINE_TYPES = [
+  { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
+  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' }
+];
+const FAULTS_BY_TYPE = {
+  'AUTO-CUTTER': ['Machine not cutting','Vacuum insufficient','Machine not feeding','Sensor error','Machine locked','Other'],
+  'AUTO-SPREADER': ['Machine not feeding','Sensor error','Machine not cutting','Machine not moving','Emergency stop not working','Other']
+};
+const MECHANICS = ['Dean', 'Jody'];
+const LOCATIONS = ['PMT', 'PCN'];
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a1a; }
+
+.header { background: #1F3864; color: white; padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+.header h1 { font-size: 17px; font-weight: 600; }
+.main { padding: 16px 20px; max-width: 1300px; margin: 0 auto; }
+
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tab { padding: 9px 18px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; background: white; color: #666; }
+.tab.active { background: #1F3864; color: white; border-color: #1F3864; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+.card { background: white; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.card-title { font-size: 13px; font-weight: 700; color: #333; margin-bottom: 10px; }
+
+.filter-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; background: white; padding: 12px 16px; border-radius: 10px; }
+.filter-bar label { font-size: 12px; font-weight: 600; color: #555; }
+.filter-bar input, .filter-bar select { padding: 7px 10px; border: 1.5px solid #ddd; border-radius: 6px; font-size: 13px; font-family: inherit; }
+.section-btn { padding: 7px 16px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; border: 2px solid var(--sc); background: white; color: var(--sc); transition: all 0.15s; white-space: nowrap; }
+.section-btn:hover { background: var(--sc); color: white; }
+.section-btn.active { background: var(--sc); color: white; }
+.btn { padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.btn.navy { background: #1F3864; color: white; }
+.btn.green { background: #70AD47; color: white; }
+.btn.orange { background: #ED7D31; color: white; }
+.btn.grey { background: #f0f2f5; color: #555; }
+.btn.red { background: #C00000; color: white; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi { background: white; border-radius: 10px; padding: 14px; border-left: 4px solid #ddd; }
+.kpi.blue { border-left-color: #2E5597; } .kpi.green { border-left-color: #70AD47; }
+.kpi.orange { border-left-color: #ED7D31; } .kpi.red { border-left-color: #C00000; }
+.kpi-label { font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+.kpi-value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; padding: 8px; border-bottom: 2px solid #f0f2f5; }
+td { padding: 8px; border-bottom: 1px solid #f5f5f5; }
+tr:hover td { background: #fafafa; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+.pill-open { background: #FCE4D6; color: #843C0C; }
+.pill-inv { background: #DEEAF1; color: #1F497D; }
+.pill-done { background: #E2EFDA; color: #3B6D11; }
+.pill-low { background: #FCE4D6; color: #C00000; }
+.pill-oos { background: #FCEBEB; color: #A32D2D; }
+.empty { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+.loading { text-align: center; padding: 40px; color: #aaa; }
+.spinner { width: 26px; height: 26px; border: 3px solid #f0f2f5; border-top-color: #2E5597; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 999; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.show { display: flex; }
+.modal { background: white; border-radius: 14px; padding: 22px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; }
+.modal h3 { font-size: 16px; margin-bottom: 14px; color: #1F3864; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; margin-bottom: 5px; }
+.field input, .field select, .field textarea { width: 100%; padding: 10px 12px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+.modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); padding: 12px 22px; border-radius: 10px; font-size: 14px; font-weight: 600; color: white; opacity: 0; transition: all 0.3s; z-index: 1001; }
+.toast.success { background: #3B6D11; } .toast.error { background: #A32D2D; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Bullmer Dashboard</h1>
+  <span style="font-size:12px;opacity:0.7;">PMT · PCN</span>
+</div>
+
+<div class="main">
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('downtime')">Downtime</div>
+    <div class="tab" onclick="switchTab('pm')">Preventative Maintenance</div>
+    <div class="tab" onclick="switchTab('profile')">Asset Profile</div>
+    <div class="tab" onclick="switchTab('inventory')">Inventory</div>
+  </div>
+
+  <!-- ═══ DOWNTIME TAB ═══ -->
+  <div class="panel active" id="panel-downtime">
+    <div class="filter-bar">
+      <label>From</label><input type="date" id="dtFrom" onchange="loadDowntime()">
+      <label>To</label><input type="date" id="dtTo" onchange="loadDowntime()">
+      <span style="font-size:12px;font-weight:700;color:#555;">Location:</span>
+      <button id="dtSecAll" onclick="setDtLocation('')" class="section-btn active" style="--sc:#1F3864;">All</button>
+      <button id="dtSecPMT" onclick="setDtLocation('PMT')" class="section-btn" style="--sc:#2D7D46;">PMT</button>
+      <button id="dtSecPCN" onclick="setDtLocation('PCN')" class="section-btn" style="--sc:#1B4F8A;">PCN</button>
+      <button class="btn grey" onclick="clearDowntimeFilter()">Clear</button>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi blue"><div class="kpi-label">Total incidents</div><div class="kpi-value" id="dtKpiTotal">—</div></div>
+      <div class="kpi red"><div class="kpi-label">Open now</div><div class="kpi-value" id="dtKpiOpen">—</div></div>
+      <div class="kpi orange"><div class="kpi-label">Avg response</div><div class="kpi-value" id="dtKpiResponse">—</div></div>
+      <div class="kpi green"><div class="kpi-label">Avg repair</div><div class="kpi-value" id="dtKpiRepair">—</div></div>
+      <div class="kpi blue"><div class="kpi-label">Total downtime</div><div class="kpi-value" id="dtKpiTotalMins">—</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Incidents</div>
+      <div style="overflow-x:auto;" id="dtTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- ═══ PM TAB ═══ -->
+  <div class="panel" id="panel-pm">
+    <div class="kpi-grid">
+      <div class="kpi blue"><div class="kpi-label">Total PM visits</div><div class="kpi-value" id="pmKpiTotal">—</div></div>
+      <div class="kpi orange"><div class="kpi-label">Major services</div><div class="kpi-value" id="pmKpiMajor">—</div></div>
+      <div class="kpi red"><div class="kpi-label">Poor condition flags</div><div class="kpi-value" id="pmKpiPoor">—</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Recent PM activity</div>
+      <div style="overflow-x:auto;" id="pmTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- ═══ ASSET PROFILE TAB ═══ -->
+  <div class="panel" id="panel-profile">
+    <div class="filter-bar">
+      <label>Asset</label>
+      <select id="profileAssetSelect" onchange="loadAssetProfile()" style="min-width:200px;"><option value="">— Select an asset —</option></select>
+    </div>
+    <div id="profileEmpty" class="card"><div class="empty">Select an asset above to view its profile</div></div>
+    <div id="profileContent" style="display:none;">
+      <div class="kpi-grid">
+        <div class="kpi blue"><div class="kpi-label">Downtime incidents</div><div class="kpi-value" id="profKpiIncidents">—</div></div>
+        <div class="kpi red"><div class="kpi-label">Total downtime</div><div class="kpi-value" id="profKpiDowntime">—</div></div>
+        <div class="kpi green"><div class="kpi-label">PM visits</div><div class="kpi-value" id="profKpiPM">—</div></div>
+        <div class="kpi orange"><div class="kpi-label">Parts issued</div><div class="kpi-value" id="profKpiParts">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Downtime history</div>
+        <div style="overflow-x:auto;" id="profDowntimeTable"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">PM history</div>
+        <div style="overflow-x:auto;" id="profPMTable"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Parts issued</div>
+        <div style="overflow-x:auto;" id="profPartsTable"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ INVENTORY TAB ═══ -->
+  <div class="panel" id="panel-inventory">
+    <div class="filter-bar">
+      <span style="font-size:12px;font-weight:700;color:#555;">Location:</span>
+      <button id="invSecAll" onclick="setInvLocation('')" class="section-btn active" style="--sc:#1F3864;">All</button>
+      <button id="invSecPMT" onclick="setInvLocation('PMT')" class="section-btn" style="--sc:#2D7D46;">PMT</button>
+      <button id="invSecPCN" onclick="setInvLocation('PCN')" class="section-btn" style="--sc:#1B4F8A;">PCN</button>
+      <button class="btn navy" onclick="showPartForm()">+ Add Part</button>
+      <button class="btn grey" onclick="document.getElementById('csvFileInput').click()">Import CSV</button>
+      <input type="file" id="csvFileInput" accept=".csv" style="display:none;" onchange="handleCsvImport(this)">
+      <a href="#" onclick="downloadCsvTemplate();return false;" style="font-size:12px;color:#2E5597;margin-left:auto;">⬇ CSV template</a>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi red"><div class="kpi-label">Low / out of stock</div><div class="kpi-value" id="invKpiLow">—</div></div>
+      <div class="kpi orange"><div class="kpi-label">Pending requests</div><div class="kpi-value" id="invKpiPending">—</div></div>
+      <div class="kpi blue"><div class="kpi-label">Total parts</div><div class="kpi-value" id="invKpiTotal">—</div></div>
+      <div class="kpi green"><div class="kpi-label">Awaiting supplier return</div><div class="kpi-value" id="invKpiSupplier">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Pending part requests</div>
+      <div id="pendingRequestsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Stock catalogue</div>
+      <input type="text" id="invSearch" placeholder="Search part name or number..." oninput="renderInventoryTable()" style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;">
+      <div style="overflow-x:auto;" id="invTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Awaiting supplier return</div>
+      <div id="supplierReturnList"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Part add/edit modal -->
+<div class="modal-overlay" id="partModal">
+  <div class="modal">
+    <h3 id="partModalTitle">Add Part</h3>
+    <div class="field"><label>Part number</label><input id="pfPartNo" type="text"></div>
+    <div class="field"><label>Description</label><input id="pfDesc" type="text"></div>
+    <div class="field"><label>Location</label>
+      <select id="pfLocation"><option>PMT</option><option>PCN</option></select>
+    </div>
+    <div class="field"><label>Machine type</label>
+      <select id="pfMachineType"><option value="">—</option><option>AUTO-CUTTER</option><option>AUTO-SPREADER</option></select>
+    </div>
+    <div class="field"><label>Supplier</label><input id="pfSupplier" type="text"></div>
+    <div class="field"><label>Draw number</label><input id="pfDraw" type="text"></div>
+    <div class="field"><label>Unit price</label><input id="pfPrice" type="number" step="0.01"></div>
+    <div class="field"><label>Stock qty</label><input id="pfStock" type="number" value="0"></div>
+    <div class="field"><label>Min qty</label><input id="pfMin" type="number" value="0"></div>
+    <div class="modal-actions">
+      <button class="btn grey" onclick="closePartModal()">Cancel</button>
+      <button class="btn navy" onclick="requirePin('Save part', savePart)">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Issue part modal -->
+<div class="modal-overlay" id="issueModal">
+  <div class="modal">
+    <h3>Issue Part</h3>
+    <div id="issueModalInfo" style="font-size:13px;color:#666;margin-bottom:12px;"></div>
+    <div class="field"><label>Match to inventory part number (optional)</label>
+      <input id="issuePartSearch" type="text" placeholder="Search..." oninput="filterIssuePartOptions()">
+      <select id="issuePartSelect" size="5" style="margin-top:6px;"></select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn red" onclick="markRequestOutOfStock()">Out of Stock</button>
+      <button class="btn green" onclick="requirePin('Issue part', confirmIssuePart)">Issue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scoped PIN confirmation — only shown before actions that add/consume stock -->
+<div class="modal-overlay" id="pinModal">
+  <div class="modal" style="max-width:320px;text-align:center;">
+    <h3 id="pinModalLabel">Enter PIN</h3>
+    <input type="password" id="pinModalInput" maxlength="6" inputmode="numeric" placeholder="----"
+      style="text-align:center;letter-spacing:8px;font-size:22px;padding:12px;border:2px solid #ddd;border-radius:10px;width:100%;margin-bottom:8px;"
+      onkeydown="if(event.key==='Enter') submitPinModal()">
+    <div id="pinModalError" style="color:#C00000;font-size:12px;min-height:16px;margin-bottom:6px;"></div>
+    <div class="modal-actions">
+      <button class="btn grey" onclick="closePinModal()">Cancel</button>
+      <button class="btn navy" onclick="submitPinModal()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api';
+let currentTab = 'downtime';
+let allInventory = [];
+let allPendingRequests = [];
+let activeIssueRequestId = null;
+let activeDtLocation = '';
+let activeInvLocation = '';
+
+// ── SCOPED PIN CONFIRMATION ────────────────────────────────────────
+// Only gates actions that add or consume stock (saving/adding parts,
+// CSV import, issuing a part). Everything else in the dashboard is open.
+// Default PIN is 2468 — CHANGE THIS before real use. To set a new PIN:
+// open browser console, run:
+//   await crypto.subtle.digest('SHA-256', new TextEncoder().encode('yourPIN'))
+//     .then(b => Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join(''))
+// and paste the result below as PIN_HASH.
+const PIN_HASH = 'a1fb4e703a9ef1fa4936801721ff285a97ac85330856674412e054892afe6972'; // sha256("2468")
+let pinCallback = null;
+
+async function hashPin(pin) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function requirePin(label, callback) {
+  pinCallback = callback;
+  document.getElementById('pinModalLabel').textContent = label;
+  document.getElementById('pinModalInput').value = '';
+  document.getElementById('pinModalError').textContent = '';
+  document.getElementById('pinModal').classList.add('show');
+  setTimeout(() => document.getElementById('pinModalInput').focus(), 50);
+}
+
+function closePinModal() {
+  document.getElementById('pinModal').classList.remove('show');
+  pinCallback = null;
+}
+
+async function submitPinModal() {
+  const pin = document.getElementById('pinModalInput').value.trim();
+  const hash = await hashPin(pin);
+  if (hash === PIN_HASH) {
+    const cb = pinCallback;
+    closePinModal();
+    if (cb) cb();
+  } else {
+    document.getElementById('pinModalError').textContent = 'Incorrect PIN';
+  }
+}
+
+// ── NAV ────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['downtime','pm','profile','inventory'][i] === tab));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+  if (tab === 'downtime')  loadDowntime();
+  if (tab === 'pm')        loadPM();
+  if (tab === 'profile')   loadAssetDropdown();
+  if (tab === 'inventory') loadInventory();
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type + ' show';
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function fmtMins(mins) {
+  if (!mins && mins !== 0) return '—';
+  const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-ZA', { day:'2-digit', month:'2-digit', year:'numeric' });
+}
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-ZA', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+function initDashboard() {
+  loadDowntime();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DOWNTIME TAB
+// ═══════════════════════════════════════════════════════════════════
+async function loadDowntime() {
+  const from = document.getElementById('dtFrom').value;
+  const to = document.getElementById('dtTo').value;
+
+  let url = API_BASE + '/downtime-log?mode=dashboard';
+  if (from) url += '&from=' + from;
+  if (to) url += '&to=' + to;
+  if (activeDtLocation) url += '&location=' + activeDtLocation;
+
+  const res = await fetch(url);
+  const data = await res.json();
+  renderDowntime(data);
+}
+
+function setDtLocation(loc) {
+  activeDtLocation = loc;
+  ['dtSecAll','dtSecPMT','dtSecPCN'].forEach(id => document.getElementById(id).classList.remove('active'));
+  const btnId = loc === 'PMT' ? 'dtSecPMT' : loc === 'PCN' ? 'dtSecPCN' : 'dtSecAll';
+  document.getElementById(btnId).classList.add('active');
+  loadDowntime();
+}
+
+function clearDowntimeFilter() {
+  document.getElementById('dtFrom').value = '';
+  document.getElementById('dtTo').value = '';
+  setDtLocation('');
+}
+
+function renderDowntime(rows) {
+  const open = rows.filter(r => r.status !== 'Resolved').length;
+  const resolved = rows.filter(r => r.status === 'Resolved');
+  const avgResponse = resolved.filter(r => r.response_minutes != null);
+  const avgRepair = resolved.filter(r => r.repair_minutes != null);
+  const totalMins = resolved.reduce((s,r) => s + (r.total_downtime_minutes || 0), 0);
+
+  document.getElementById('dtKpiTotal').textContent = rows.length;
+  document.getElementById('dtKpiOpen').textContent = open;
+  document.getElementById('dtKpiResponse').textContent = avgResponse.length
+    ? Math.round(avgResponse.reduce((s,r)=>s+r.response_minutes,0)/avgResponse.length) + 'm' : '—';
+  document.getElementById('dtKpiRepair').textContent = avgRepair.length
+    ? fmtMins(Math.round(avgRepair.reduce((s,r)=>s+r.repair_minutes,0)/avgRepair.length)) : '—';
+  document.getElementById('dtKpiTotalMins').textContent = fmtMins(totalMins);
+
+  const el = document.getElementById('dtTable');
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">No incidents in this range.</div>'; return; }
+
+  let html = '<table><thead><tr><th>Asset</th><th>Location</th><th>Type</th><th>Fault</th><th>Status</th><th>Mechanic</th><th>Reported</th><th>Downtime</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const pillClass = r.status === 'Resolved' ? 'pill-done' : r.status === 'Investigating' ? 'pill-inv' : 'pill-open';
+    html += `<tr><td><strong>${r.asset_no}</strong></td><td>${r.line||'—'}</td><td>${r.machine_type||'—'}</td><td>${r.fault||'—'}</td>
+      <td><span class="pill ${pillClass}">${r.status}</span></td><td>${r.mechanic||'—'}</td>
+      <td>${fmtDateTime(r.reported_time)}</td><td>${fmtMins(r.total_downtime_minutes)}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PM TAB
+// ═══════════════════════════════════════════════════════════════════
+async function loadPM() {
+  const res = await fetch(API_BASE + '/pm-log');
+  const rows = await res.json();
+  renderPM(rows);
+}
+
+function renderPM(rows) {
+  document.getElementById('pmKpiTotal').textContent = rows.length;
+  document.getElementById('pmKpiMajor').textContent = rows.filter(r => r.service_type === 'major').length;
+  document.getElementById('pmKpiPoor').textContent = rows.filter(r => r.machine_condition === 'Poor').length;
+
+  const el = document.getElementById('pmTable');
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">No PM visits logged yet.</div>'; return; }
+
+  let html = '<table><thead><tr><th>Date</th><th>Asset</th><th>Location</th><th>Type</th><th>Tier</th><th>Condition</th><th>By</th><th>Next due</th><th>Notes</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const condColor = r.machine_condition === 'Poor' ? '#C00000' : r.machine_condition === 'Average' ? '#ED7D31' : '#3B6D11';
+    html += `<tr><td>${fmtDate(r.completed_date)}</td><td><strong>${r.asset_no}</strong></td><td>${r.location||'—'}</td>
+      <td>${r.machine_type||'—'}</td><td style="text-transform:capitalize;">${r.service_type||'—'}</td>
+      <td style="color:${condColor};font-weight:600;">${r.machine_condition||'—'}</td><td>${r.completed_by||'—'}</td>
+      <td>${r.next_due_date ? fmtDate(r.next_due_date) : '—'}</td><td style="font-size:12px;color:#888;">${r.overall_note||''}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ASSET PROFILE TAB
+// ═══════════════════════════════════════════════════════════════════
+async function loadAssetDropdown() {
+  const sel = document.getElementById('profileAssetSelect');
+  if (sel.dataset.loaded) return;
+  const res = await fetch(API_BASE + '/master-data');
+  const assets = await res.json();
+  sel.innerHTML = '<option value="">— Select an asset —</option>' +
+    assets.map(a => `<option value="${a.asset_no}">${a.asset_no} (${a.asset_type})</option>`).join('');
+  sel.dataset.loaded = '1';
+}
+
+async function loadAssetProfile() {
+  const assetNo = document.getElementById('profileAssetSelect').value;
+  if (!assetNo) {
+    document.getElementById('profileEmpty').style.display = 'block';
+    document.getElementById('profileContent').style.display = 'none';
+    return;
+  }
+
+  const [dtRes, pmRes, partsRes] = await Promise.all([
+    fetch(API_BASE + '/downtime-log?mode=dashboard&asset_no=' + encodeURIComponent(assetNo)),
+    fetch(API_BASE + '/pm-log?asset_no=' + encodeURIComponent(assetNo)),
+    fetch(API_BASE + '/parts-requests?asset_no=' + encodeURIComponent(assetNo))
+  ]);
+  const downtime = await dtRes.json();
+  const pm = await pmRes.json();
+  const parts = await partsRes.json();
+
+  const totalDowntime = downtime.filter(r => r.status === 'Resolved').reduce((s,r) => s + (r.total_downtime_minutes||0), 0);
+  document.getElementById('profKpiIncidents').textContent = downtime.length;
+  document.getElementById('profKpiDowntime').textContent = fmtMins(totalDowntime);
+  document.getElementById('profKpiPM').textContent = pm.length;
+  document.getElementById('profKpiParts').textContent = parts.length;
+
+  let dtHtml = downtime.length === 0 ? '<div class="empty">No downtime recorded.</div>' :
+    '<table><thead><tr><th>Date</th><th>Fault</th><th>Status</th><th>Mechanic</th><th>Downtime</th></tr></thead><tbody>' +
+    downtime.map(r => `<tr><td>${fmtDateTime(r.reported_time)}</td><td>${r.fault||'—'}</td><td>${r.status}</td><td>${r.mechanic||'—'}</td><td>${fmtMins(r.total_downtime_minutes)}</td></tr>`).join('') +
+    '</tbody></table>';
+  document.getElementById('profDowntimeTable').innerHTML = dtHtml;
+
+  let pmHtml = pm.length === 0 ? '<div class="empty">No PM history.</div>' :
+    '<table><thead><tr><th>Date</th><th>Tier</th><th>Condition</th><th>By</th><th>Notes</th></tr></thead><tbody>' +
+    pm.map(r => `<tr><td>${fmtDate(r.completed_date)}</td><td style="text-transform:capitalize;">${r.service_type}</td><td>${r.machine_condition}</td><td>${r.completed_by}</td><td style="font-size:12px;color:#888;">${r.overall_note||''}</td></tr>`).join('') +
+    '</tbody></table>';
+  document.getElementById('profPMTable').innerHTML = pmHtml;
+
+  let partsHtml = parts.length === 0 ? '<div class="empty">No parts issued.</div>' :
+    '<table><thead><tr><th>Date</th><th>Part</th><th>Qty</th><th>Status</th><th>Mechanic</th></tr></thead><tbody>' +
+    parts.map(r => `<tr><td>${fmtDateTime(r.requested_time)}</td><td>${r.part_description||'—'}</td><td>x${r.quantity}</td><td>${r.status}</td><td>${r.mechanic||'—'}</td></tr>`).join('') +
+    '</tbody></table>';
+  document.getElementById('profPartsTable').innerHTML = partsHtml;
+
+  document.getElementById('profileEmpty').style.display = 'none';
+  document.getElementById('profileContent').style.display = 'block';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INVENTORY TAB
+// ═══════════════════════════════════════════════════════════════════
+async function loadInventory() {
+  const url = API_BASE + '/parts-inventory' + (activeInvLocation ? '?location=' + activeInvLocation : '');
+  const res = await fetch(url);
+  allInventory = await res.json();
+
+  const lowStock = allInventory.filter(p => p.min_qty > 0 && p.stock_qty <= p.min_qty);
+  document.getElementById('invKpiLow').textContent = lowStock.length;
+  document.getElementById('invKpiTotal').textContent = allInventory.length;
+
+  renderInventoryTable();
+  loadPendingRequests();
+  loadSupplierReturns();
+}
+
+function setInvLocation(loc) {
+  activeInvLocation = loc;
+  ['invSecAll','invSecPMT','invSecPCN'].forEach(id => document.getElementById(id).classList.remove('active'));
+  const btnId = loc === 'PMT' ? 'invSecPMT' : loc === 'PCN' ? 'invSecPCN' : 'invSecAll';
+  document.getElementById(btnId).classList.add('active');
+  loadInventory();
+}
+
+function renderInventoryTable() {
+  const q = (document.getElementById('invSearch').value || '').toLowerCase();
+  const filtered = q.length < 2 ? allInventory : allInventory.filter(p =>
+    (p.description||'').toLowerCase().includes(q) || (p.part_no||'').toLowerCase().includes(q));
+
+  const el = document.getElementById('invTable');
+  if (filtered.length === 0) { el.innerHTML = '<div class="empty">No parts found.</div>'; return; }
+
+  let html = '<table><thead><tr><th>Part</th><th>Part No</th><th>Location</th><th>Machine type</th><th>Supplier</th><th>Stock</th><th>Min</th><th>Actions</th></tr></thead><tbody>';
+  filtered.forEach(p => {
+    const isOos = p.stock_qty === 0;
+    const isLow = !isOos && p.min_qty > 0 && p.stock_qty <= p.min_qty;
+    const stockPill = isOos ? '<span class="pill pill-oos">OUT</span>' : isLow ? '<span class="pill pill-low">LOW</span>' : '';
+    html += `<tr>
+      <td><strong>${p.description||'—'}</strong></td>
+      <td style="font-size:12px;color:#888;">${p.part_no}</td>
+      <td>${p.location}</td>
+      <td style="font-size:12px;">${p.machine_type||'—'}</td>
+      <td style="font-size:12px;">${p.supplier||'—'}</td>
+      <td>${p.stock_qty} ${stockPill}</td>
+      <td style="color:#888;">${p.min_qty||0}</td>
+      <td>
+        <button class="btn navy" style="padding:5px 10px;font-size:11px;" onclick="showPartForm('${p.part_no}','${p.location}')">Edit</button>
+        <button class="btn red" style="padding:5px 10px;font-size:11px;" onclick="deletePart('${p.part_no}','${p.location}')">Del</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function showPartForm(partNo, location) {
+  const existing = partNo ? allInventory.find(p => p.part_no === partNo && p.location === location) : null;
+  document.getElementById('partModalTitle').textContent = existing ? 'Edit Part' : 'Add Part';
+  document.getElementById('pfPartNo').value = existing ? existing.part_no : '';
+  document.getElementById('pfPartNo').disabled = !!existing;
+  document.getElementById('pfDesc').value = existing ? existing.description || '' : '';
+  document.getElementById('pfLocation').value = existing ? existing.location : (activeInvLocation || 'PMT');
+  document.getElementById('pfMachineType').value = existing ? existing.machine_type || '' : '';
+  document.getElementById('pfSupplier').value = existing ? existing.supplier || '' : '';
+  document.getElementById('pfDraw').value = existing ? existing.draw_number || '' : '';
+  document.getElementById('pfPrice').value = existing && existing.unit_price != null ? existing.unit_price : '';
+  document.getElementById('pfStock').value = existing ? existing.stock_qty : 0;
+  document.getElementById('pfMin').value = existing ? existing.min_qty : 0;
+  document.getElementById('partModal').classList.add('show');
+}
+
+function closePartModal() {
+  document.getElementById('partModal').classList.remove('show');
+  document.getElementById('pfPartNo').disabled = false;
+}
+
+async function savePart() {
+  const payload = {
+    part_no: document.getElementById('pfPartNo').value.trim(),
+    location: document.getElementById('pfLocation').value,
+    description: document.getElementById('pfDesc').value.trim(),
+    machine_type: document.getElementById('pfMachineType').value || null,
+    supplier: document.getElementById('pfSupplier').value.trim() || null,
+    draw_number: document.getElementById('pfDraw').value.trim() || null,
+    unit_price: document.getElementById('pfPrice').value ? parseFloat(document.getElementById('pfPrice').value) : null,
+    stock_qty: parseInt(document.getElementById('pfStock').value) || 0,
+    min_qty: parseInt(document.getElementById('pfMin').value) || 0
+  };
+  if (!payload.part_no || !payload.description) { showToast('Part number and description required.', 'error'); return; }
+
+  const res = await fetch(API_BASE + '/parts-inventory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  if (res.ok) {
+    showToast('Part saved.', 'success');
+    closePartModal();
+    loadInventory();
+  } else {
+    showToast('Save failed.', 'error');
+  }
+}
+
+async function deletePart(partNo, location) {
+  if (!confirm('Delete ' + partNo + ' from ' + location + '?')) return;
+  const res = await fetch(API_BASE + '/parts-inventory?part_no=' + encodeURIComponent(partNo) + '&location=' + encodeURIComponent(location), { method: 'DELETE' });
+  if (res.ok) { showToast('Part deleted.', 'success'); loadInventory(); }
+  else showToast('Delete failed.', 'error');
+}
+
+function downloadCsvTemplate() {
+  const csv = 'part_no,description,location,stock_qty,min_qty,machine_type,supplier,draw_number,unit_price\nEX001,Example Part,PMT,10,2,AUTO-CUTTER,Supplier Co,D-14,25.50\n';
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'inventory_template.csv';
+  a.click();
+}
+
+function handleCsvImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  requirePin('Import CSV', () => processCsvImport(file, input));
+}
+
+function processCsvImport(file, input) {
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const lines = e.target.result.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) { showToast('CSV appears empty.', 'error'); return; }
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const idx = (name) => headers.indexOf(name);
+    if (idx('part_no') < 0 || idx('description') < 0 || idx('location') < 0) {
+      showToast('CSV needs part_no, description, location columns.', 'error');
+      return;
+    }
+    let success = 0, failed = 0;
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim());
+      if (!cols[idx('part_no')]) continue;
+      const payload = {
+        part_no: cols[idx('part_no')],
+        description: cols[idx('description')] || '',
+        location: cols[idx('location')],
+        stock_qty: idx('stock_qty') >= 0 ? parseInt(cols[idx('stock_qty')]) || 0 : 0,
+        min_qty: idx('min_qty') >= 0 ? parseInt(cols[idx('min_qty')]) || 0 : 0,
+        machine_type: idx('machine_type') >= 0 ? cols[idx('machine_type')] || null : null,
+        supplier: idx('supplier') >= 0 ? cols[idx('supplier')] || null : null,
+        draw_number: idx('draw_number') >= 0 ? cols[idx('draw_number')] || null : null,
+        unit_price: idx('unit_price') >= 0 && cols[idx('unit_price')] ? parseFloat(cols[idx('unit_price')]) : null
+      };
+      try {
+        const res = await fetch(API_BASE + '/parts-inventory', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        if (res.ok) success++; else failed++;
+      } catch(e) { failed++; }
+    }
+    showToast(`Imported ${success} parts${failed > 0 ? ', ' + failed + ' failed' : ''}.`, success > 0 ? 'success' : 'error');
+    input.value = '';
+    loadInventory();
+  };
+  reader.readAsText(file);
+}
+
+async function loadPendingRequests() {
+  const res = await fetch(API_BASE + '/parts-requests?status=Pending');
+  allPendingRequests = await res.json();
+  document.getElementById('invKpiPending').textContent = allPendingRequests.length;
+
+  const el = document.getElementById('pendingRequestsList');
+  if (allPendingRequests.length === 0) { el.innerHTML = '<div class="empty">No pending requests — all clear!</div>'; return; }
+
+  el.innerHTML = allPendingRequests.map(r => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f5f5f5;">
+      <div>
+        <strong>${r.part_description || '—'}</strong> <span style="color:#2E5597;">x${r.quantity}</span>
+        <div style="font-size:11px;color:#888;">${r.asset_no||'—'} · ${r.line||'—'} · ${r.mechanic||'—'} · ${fmtDateTime(r.requested_time)}</div>
+      </div>
+      <button class="btn orange" style="padding:7px 14px;" onclick="openIssueModal(${r.id})">Issue</button>
+    </div>`).join('');
+}
+
+function openIssueModal(requestId) {
+  activeIssueRequestId = requestId;
+  const req = allPendingRequests.find(r => r.id === requestId);
+  document.getElementById('issueModalInfo').innerHTML =
+    `<strong>${req.part_description}</strong> x${req.quantity}<br>${req.asset_no||'—'} · ${req.line||'—'} · requested by ${req.mechanic||'—'}`;
+  document.getElementById('issuePartSearch').value = '';
+  filterIssuePartOptions();
+  document.getElementById('issueModal').classList.add('show');
+}
+
+function filterIssuePartOptions() {
+  const q = (document.getElementById('issuePartSearch').value || '').toLowerCase();
+  const filtered = q.length < 2 ? allInventory : allInventory.filter(p =>
+    (p.description||'').toLowerCase().includes(q) || (p.part_no||'').toLowerCase().includes(q));
+  document.getElementById('issuePartSelect').innerHTML =
+    '<option value="">— No match —</option>' +
+    filtered.map(p => `<option value="${p.part_no}|${p.location}">${p.description} (${p.part_no}) — ${p.location}, stock ${p.stock_qty}</option>`).join('');
+}
+
+async function confirmIssuePart() {
+  const sel = document.getElementById('issuePartSelect').value;
+  const [partNo, location] = sel ? sel.split('|') : ['', ''];
+
+  await fetch(API_BASE + '/parts-requests/' + activeIssueRequestId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'Issued', issued_time: new Date().toISOString(), part_no: partNo })
+  });
+
+  if (partNo && location) {
+    const part = allInventory.find(p => p.part_no === partNo && p.location === location);
+    const req = allPendingRequests.find(r => r.id === activeIssueRequestId);
+    if (part) {
+      await fetch(API_BASE + '/parts-inventory', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ part_no: partNo, location, stock_qty: Math.max(0, part.stock_qty - (req?.quantity||1)) })
+      });
+    }
+  }
+
+  document.getElementById('issueModal').classList.remove('show');
+  showToast('Part issued.', 'success');
+  loadInventory();
+}
+
+async function markRequestOutOfStock() {
+  await fetch(API_BASE + '/parts-requests/' + activeIssueRequestId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'Out of Stock', issued_time: new Date().toISOString() })
+  });
+  document.getElementById('issueModal').classList.remove('show');
+  showToast('Marked as out of stock.', 'error');
+  loadInventory();
+}
+
+async function loadSupplierReturns() {
+  const res = await fetch(API_BASE + '/parts-returns?awaiting_supplier=1');
+  const rows = await res.json();
+  document.getElementById('invKpiSupplier').textContent = rows.length;
+
+  const el = document.getElementById('supplierReturnList');
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">Nothing awaiting supplier return.</div>'; return; }
+
+  el.innerHTML = rows.map(r => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f5f5f5;">
+      <div>
+        <strong>${r.part_description||'—'}</strong> x${r.quantity_returned}
+        <div style="font-size:11px;color:#888;">${r.asset_no||'—'} · ${fmtDateTime(r.return_time)}</div>
+      </div>
+      <button class="btn navy" style="padding:6px 12px;font-size:11px;" onclick="markSupplierReturned(${r.id})">Mark Returned</button>
+    </div>`).join('');
+}
+
+async function markSupplierReturned(id) {
+  await fetch(API_BASE + '/parts-returns/' + id, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ supplier_return_status: 'Returned to supplier' })
+  });
+  showToast('Marked as returned.', 'success');
+  loadInventory();
+}
+
+// Dashboard loads immediately — no full-page login. Only the two actions
+// that add/consume stock (save part, issue part) prompt for a PIN.
+initDashboard();
+</script>
+</body>
+</html>
