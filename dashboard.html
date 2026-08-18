@@ -196,6 +196,11 @@ tr:hover td { background: #fafafa; }
     </div>
 
     <div class="card">
+      <div class="card-title">Repeated part replacements <span style="font-weight:400;color:#888;font-size:11px;">— same part issued 2+ times to the same asset</span></div>
+      <div id="repeatsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Awaiting supplier return</div>
       <div id="supplierReturnList"><div class="empty">Loading...</div></div>
     </div>
@@ -506,9 +511,37 @@ async function loadAssetProfile() {
     '</tbody></table>';
   document.getElementById('profPMTable').innerHTML = pmHtml;
 
-  let partsHtml = parts.length === 0 ? '<div class="empty">No parts issued.</div>' :
+  // Count how many times each part_description was actually issued to
+  // this asset, so repeats can be flagged inline rather than requiring a
+  // trip to the fleet-wide report.
+  const issuedOnly = parts.filter(r => r.status === 'Issued');
+  const partCounts = {};
+  issuedOnly.forEach(r => {
+    const key = (r.part_description || '').trim().toLowerCase();
+    if (!key) return;
+    partCounts[key] = (partCounts[key] || 0) + 1;
+  });
+  const repeatedParts = Object.entries(partCounts).filter(([,count]) => count >= 2);
+
+  let partsHtml = '';
+  if (repeatedParts.length > 0) {
+    partsHtml += `<div style="background:#FFF5F5;border:1.5px solid #F7C1C1;border-left:4px solid #C00000;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
+      <strong style="color:#C00000;">⚠ ${repeatedParts.length} part${repeatedParts.length > 1 ? 's' : ''} replaced more than once on this asset:</strong>
+      ${repeatedParts.map(([desc, count]) => desc + ' (' + count + 'x)').join(', ')}
+    </div>`;
+  }
+
+  partsHtml += parts.length === 0 ? '<div class="empty">No parts issued.</div>' :
     '<table><thead><tr><th>Date</th><th>Part</th><th>Qty</th><th>Status</th><th>Mechanic</th></tr></thead><tbody>' +
-    parts.map(r => `<tr><td>${fmtDateTime(r.requested_time)}</td><td>${r.part_description||'—'}</td><td>x${r.quantity}</td><td>${r.status}</td><td>${r.mechanic||'—'}</td></tr>`).join('') +
+    parts.map(r => {
+      const key = (r.part_description || '').trim().toLowerCase();
+      const isRepeat = r.status === 'Issued' && partCounts[key] >= 2;
+      return `<tr${isRepeat ? ' style="background:#FFF8F8;"' : ''}>
+        <td>${fmtDateTime(r.requested_time)}</td>
+        <td>${r.part_description||'—'}${isRepeat ? ' <span class="pill pill-oos" style="margin-left:4px;">' + partCounts[key] + 'x</span>' : ''}</td>
+        <td>x${r.quantity}</td><td>${r.status}</td><td>${r.mechanic||'—'}</td>
+      </tr>`;
+    }).join('') +
     '</tbody></table>';
   document.getElementById('profPartsTable').innerHTML = partsHtml;
 
@@ -531,6 +564,7 @@ async function loadInventory() {
   renderInventoryTable();
   loadPendingRequests();
   loadSupplierReturns();
+  loadRepeatedReplacements();
 }
 
 function setInvLocation(loc) {
@@ -849,6 +883,37 @@ async function markRequestOutOfStock() {
   document.getElementById('issueModal').classList.remove('show');
   showToast('Marked as out of stock.', 'error');
   loadInventory();
+}
+
+async function loadRepeatedReplacements() {
+  const res = await fetch(API_BASE + '/parts-requests?mode=repeats');
+  const rows = await res.json();
+
+  const el = document.getElementById('repeatsList');
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">No part has been replaced more than once on the same asset — nothing to flag.</div>'; return; }
+
+  el.innerHTML = '<table><thead><tr><th>Asset</th><th>Part</th><th>Times replaced</th><th>First</th><th>Last</th><th></th></tr></thead><tbody>' +
+    rows.map(r => {
+      const severe = r.times_used >= 3;
+      const badge = severe
+        ? '<span class="pill pill-oos">' + r.times_used + 'x</span>'
+        : '<span class="pill pill-low">' + r.times_used + 'x</span>';
+      return `<tr>
+        <td><strong>${r.asset_no}</strong></td>
+        <td>${r.part_description}</td>
+        <td>${badge}</td>
+        <td style="font-size:12px;color:#888;">${fmtDate(r.first_used)}</td>
+        <td style="font-size:12px;color:#888;">${fmtDate(r.last_used)}</td>
+        <td><button class="btn navy" style="padding:5px 10px;font-size:11px;" onclick="jumpToAssetProfile('${r.asset_no}')">View asset</button></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+async function jumpToAssetProfile(assetNo) {
+  switchTab('profile');
+  await loadAssetDropdown();
+  document.getElementById('profileAssetSelect').value = assetNo;
+  loadAssetProfile();
 }
 
 async function loadSupplierReturns() {
