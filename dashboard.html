@@ -260,6 +260,27 @@ tr:hover td { background: #fafafa; }
   </div>
 </div>
 
+<!-- CSV import preview modal -->
+<div class="modal-overlay" id="csvPreviewModal">
+  <div class="modal" style="max-width:560px;">
+    <h3>Import Preview</h3>
+    <div id="csvPreviewSummary" style="font-size:13px;color:#555;margin-bottom:14px;"></div>
+    <div class="field">
+      <label>For rows that match an existing part</label>
+      <select id="csvDuplicateStrategy">
+        <option value="skip">Skip — leave existing data untouched</option>
+        <option value="qty">Update stock/min quantities only</option>
+        <option value="override">Override — replace all fields with CSV values</option>
+      </select>
+    </div>
+    <div style="max-height:240px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:4px 8px;margin-bottom:14px;" id="csvPreviewList"></div>
+    <div class="modal-actions">
+      <button class="btn grey" onclick="closeCsvPreviewModal()">Cancel</button>
+      <button class="btn navy" onclick="requirePin('Import CSV', executeCsvImport)">Import</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API_BASE = '/api';
 let currentTab = 'downtime';
@@ -615,13 +636,14 @@ function downloadCsvTemplate() {
   a.click();
 }
 
+let pendingCsvRows = [];
+let pendingCsvInput = null;
+
 function handleCsvImport(input) {
   const file = input.files[0];
   if (!file) return;
-  requirePin('Import CSV', () => processCsvImport(file, input));
-}
+  pendingCsvInput = input;
 
-function processCsvImport(file, input) {
   const reader = new FileReader();
   reader.onload = async (e) => {
     const lines = e.target.result.split(/\r?\n/).filter(l => l.trim());
@@ -632,12 +654,13 @@ function processCsvImport(file, input) {
       showToast('CSV needs part_no, description, location columns.', 'error');
       return;
     }
-    let success = 0, failed = 0;
+
+    const rows = [];
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(',').map(c => c.trim());
-      if (!cols[idx('part_no')]) continue;
-      const payload = {
-        part_no: cols[idx('part_no')],
+      if (!cols[idx('description')] && !cols[idx('part_no')]) continue;
+      rows.push({
+        part_no: cols[idx('part_no')] || '',
         description: cols[idx('description')] || '',
         location: cols[idx('location')],
         stock_qty: idx('stock_qty') >= 0 ? parseInt(cols[idx('stock_qty')]) || 0 : 0,
@@ -646,19 +669,112 @@ function processCsvImport(file, input) {
         supplier: idx('supplier') >= 0 ? cols[idx('supplier')] || null : null,
         draw_number: idx('draw_number') >= 0 ? cols[idx('draw_number')] || null : null,
         unit_price: idx('unit_price') >= 0 && cols[idx('unit_price')] ? parseFloat(cols[idx('unit_price')]) : null
-      };
-      try {
-        const res = await fetch(API_BASE + '/parts-inventory', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
-        if (res.ok) success++; else failed++;
-      } catch(e) { failed++; }
+      });
     }
-    showToast(`Imported ${success} parts${failed > 0 ? ', ' + failed + ' failed' : ''}.`, success > 0 ? 'success' : 'error');
-    input.value = '';
-    loadInventory();
+
+    // Match against the FULL inventory (not just the currently filtered
+    // location), since the CSV can span both PMT and PCN.
+    const res = await fetch(API_BASE + '/parts-inventory');
+    const fullInventory = await res.json();
+
+    pendingCsvRows = rows.map(row => ({ row, match: findCsvMatch(row, fullInventory) }));
+    showCsvPreview();
   };
   reader.readAsText(file);
+}
+
+// Matches by part_no+location when a real part number exists; falls back
+// to description+location when it doesn't (blank, or literal "NULL" text —
+// common in these spreadsheets for generic parts with no catalog number).
+function findCsvMatch(row, inventory) {
+  const hasPartNo = row.part_no && row.part_no.trim() && row.part_no.trim().toUpperCase() !== 'NULL';
+  if (hasPartNo) {
+    return inventory.find(p =>
+      p.part_no && p.part_no.trim().toUpperCase() === row.part_no.trim().toUpperCase() &&
+      p.location === row.location
+    ) || null;
+  }
+  return inventory.find(p =>
+    (!p.part_no || !p.part_no.trim()) &&
+    p.location === row.location &&
+    (p.description || '').trim().toLowerCase() === (row.description || '').trim().toLowerCase()
+  ) || null;
+}
+
+function showCsvPreview() {
+  const total = pendingCsvRows.length;
+  const matched = pendingCsvRows.filter(r => r.match).length;
+  const newCount = total - matched;
+
+  document.getElementById('csvPreviewSummary').innerHTML =
+    `<strong>${total}</strong> rows in file — <strong style="color:#3B6D11;">${newCount} new</strong>, ` +
+    `<strong style="color:#ED7D31;">${matched} match existing parts</strong>.` +
+    (matched > 0 ? ' Choose how to handle the matches below.' : '');
+
+  const listEl = document.getElementById('csvPreviewList');
+  if (total === 0) {
+    listEl.innerHTML = '<div class="empty">No valid rows found in this file.</div>';
+  } else {
+    listEl.innerHTML = pendingCsvRows.map(({ row, match }) => `
+      <div style="display:flex;justify-content:space-between;padding:6px 4px;border-bottom:1px solid #f5f5f5;font-size:12px;">
+        <span>${row.description || '(no description)'} — ${row.location}${row.part_no ? ' · ' + row.part_no : ''}</span>
+        ${match
+          ? `<span style="color:#ED7D31;font-weight:600;">matches existing (stock ${match.stock_qty})</span>`
+          : `<span style="color:#3B6D11;font-weight:600;">new</span>`}
+      </div>`).join('');
+  }
+
+  document.getElementById('csvPreviewModal').classList.add('show');
+}
+
+function closeCsvPreviewModal() {
+  document.getElementById('csvPreviewModal').classList.remove('show');
+  pendingCsvRows = [];
+  if (pendingCsvInput) pendingCsvInput.value = '';
+}
+
+async function executeCsvImport() {
+  const strategy = document.getElementById('csvDuplicateStrategy').value;
+  let inserted = 0, updated = 0, skipped = 0, failed = 0;
+
+  for (const { row, match } of pendingCsvRows) {
+    try {
+      if (!match) {
+        // No existing part — always insert as new.
+        const res = await fetch(API_BASE + '/parts-inventory', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row)
+        });
+        if (res.ok) inserted++; else failed++;
+        continue;
+      }
+
+      if (strategy === 'skip') { skipped++; continue; }
+
+      const payload = strategy === 'override'
+        ? { ...row, id: match.id }
+        : { // qty-only: keep every existing field except stock_qty/min_qty
+            id: match.id, part_no: match.part_no, description: match.description,
+            location: match.location, machine_type: match.machine_type, supplier: match.supplier,
+            draw_number: match.draw_number, unit_price: match.unit_price,
+            stock_qty: row.stock_qty, min_qty: row.min_qty
+          };
+
+      const res = await fetch(API_BASE + '/parts-inventory', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      if (res.ok) updated++; else failed++;
+    } catch(e) { failed++; }
+  }
+
+  const parts = [];
+  if (inserted) parts.push(inserted + ' new');
+  if (updated) parts.push(updated + ' updated');
+  if (skipped) parts.push(skipped + ' skipped');
+  if (failed) parts.push(failed + ' failed');
+  showToast('Import complete: ' + parts.join(', ') + '.', failed > 0 && inserted + updated === 0 ? 'error' : 'success');
+
+  closeCsvPreviewModal();
+  loadInventory();
 }
 
 async function loadPendingRequests() {
