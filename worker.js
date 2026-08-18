@@ -246,6 +246,7 @@ async function getPartsRequests(request, env) {
   const jobCardId = url.searchParams.get('job_card_id');
   const status = url.searchParams.get('status');
   const assetNo = url.searchParams.get('asset_no');
+  const mode = url.searchParams.get('mode');
 
   if (jobCardId) {
     const { results } = await env.DB.prepare(
@@ -265,6 +266,23 @@ async function getPartsRequests(request, env) {
     const { results } = await env.DB.prepare(
       `SELECT * FROM parts_requests WHERE status = ? ORDER BY requested_time DESC`
     ).bind(status).all();
+    return json(results);
+  }
+
+  if (mode === 'repeats') {
+    // Fleet-wide: any (asset, part) combo actually issued 2+ times —
+    // flags parts that keep getting replaced on the same machine, which
+    // usually means a recurring fault, not just routine wear.
+    const { results } = await env.DB.prepare(
+      `SELECT asset_no, part_description, COUNT(*) as times_used,
+              MIN(issued_time) as first_used, MAX(issued_time) as last_used
+       FROM parts_requests
+       WHERE status = 'Issued' AND asset_no IS NOT NULL AND asset_no != ''
+         AND part_description IS NOT NULL AND part_description != ''
+       GROUP BY asset_no, part_description
+       HAVING COUNT(*) >= 2
+       ORDER BY times_used DESC, last_used DESC`
+    ).all();
     return json(results);
   }
 
