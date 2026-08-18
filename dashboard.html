@@ -208,7 +208,8 @@ tr:hover td { background: #fafafa; }
 <div class="modal-overlay" id="partModal">
   <div class="modal">
     <h3 id="partModalTitle">Add Part</h3>
-    <div class="field"><label>Part number</label><input id="pfPartNo" type="text"></div>
+    <input type="hidden" id="pfId">
+    <div class="field"><label>Part number (optional)</label><input id="pfPartNo" type="text"></div>
     <div class="field"><label>Description</label><input id="pfDesc" type="text"></div>
     <div class="field"><label>Location</label>
       <select id="pfLocation"><option>PMT</option><option>PCN</option></select>
@@ -541,8 +542,8 @@ function renderInventoryTable() {
       <td>${p.stock_qty} ${stockPill}</td>
       <td style="color:#888;">${p.min_qty||0}</td>
       <td>
-        <button class="btn navy" style="padding:5px 10px;font-size:11px;" onclick="showPartForm('${p.part_no}','${p.location}')">Edit</button>
-        <button class="btn red" style="padding:5px 10px;font-size:11px;" onclick="deletePart('${p.part_no}','${p.location}')">Del</button>
+        <button class="btn navy" style="padding:5px 10px;font-size:11px;" onclick="showPartForm(${p.id})">Edit</button>
+        <button class="btn red" style="padding:5px 10px;font-size:11px;" onclick="deletePart(${p.id})">Del</button>
       </td>
     </tr>`;
   });
@@ -550,11 +551,11 @@ function renderInventoryTable() {
   el.innerHTML = html;
 }
 
-function showPartForm(partNo, location) {
-  const existing = partNo ? allInventory.find(p => p.part_no === partNo && p.location === location) : null;
+function showPartForm(id) {
+  const existing = id ? allInventory.find(p => p.id == id) : null;
   document.getElementById('partModalTitle').textContent = existing ? 'Edit Part' : 'Add Part';
-  document.getElementById('pfPartNo').value = existing ? existing.part_no : '';
-  document.getElementById('pfPartNo').disabled = !!existing;
+  document.getElementById('pfId').value = existing ? existing.id : '';
+  document.getElementById('pfPartNo').value = existing ? existing.part_no || '' : '';
   document.getElementById('pfDesc').value = existing ? existing.description || '' : '';
   document.getElementById('pfLocation').value = existing ? existing.location : (activeInvLocation || 'PMT');
   document.getElementById('pfMachineType').value = existing ? existing.machine_type || '' : '';
@@ -568,12 +569,12 @@ function showPartForm(partNo, location) {
 
 function closePartModal() {
   document.getElementById('partModal').classList.remove('show');
-  document.getElementById('pfPartNo').disabled = false;
 }
 
 async function savePart() {
+  const id = document.getElementById('pfId').value;
   const payload = {
-    part_no: document.getElementById('pfPartNo').value.trim(),
+    part_no: document.getElementById('pfPartNo').value.trim() || null,
     location: document.getElementById('pfLocation').value,
     description: document.getElementById('pfDesc').value.trim(),
     machine_type: document.getElementById('pfMachineType').value || null,
@@ -583,7 +584,8 @@ async function savePart() {
     stock_qty: parseInt(document.getElementById('pfStock').value) || 0,
     min_qty: parseInt(document.getElementById('pfMin').value) || 0
   };
-  if (!payload.part_no || !payload.description) { showToast('Part number and description required.', 'error'); return; }
+  if (id) payload.id = parseInt(id);
+  if (!payload.description) { showToast('Description is required.', 'error'); return; }
 
   const res = await fetch(API_BASE + '/parts-inventory', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -597,9 +599,9 @@ async function savePart() {
   }
 }
 
-async function deletePart(partNo, location) {
-  if (!confirm('Delete ' + partNo + ' from ' + location + '?')) return;
-  const res = await fetch(API_BASE + '/parts-inventory?part_no=' + encodeURIComponent(partNo) + '&location=' + encodeURIComponent(location), { method: 'DELETE' });
+async function deletePart(id) {
+  if (!confirm('Delete this part?')) return;
+  const res = await fetch(API_BASE + '/parts-inventory?id=' + id, { method: 'DELETE' });
   if (res.ok) { showToast('Part deleted.', 'success'); loadInventory(); }
   else showToast('Delete failed.', 'error');
 }
@@ -693,27 +695,29 @@ function filterIssuePartOptions() {
     (p.description||'').toLowerCase().includes(q) || (p.part_no||'').toLowerCase().includes(q));
   document.getElementById('issuePartSelect').innerHTML =
     '<option value="">— No match —</option>' +
-    filtered.map(p => `<option value="${p.part_no}|${p.location}">${p.description} (${p.part_no}) — ${p.location}, stock ${p.stock_qty}</option>`).join('');
+    filtered.map(p => `<option value="${p.id}">${p.description} (${p.part_no||'no part no.'}) — ${p.location}, stock ${p.stock_qty}</option>`).join('');
 }
 
 async function confirmIssuePart() {
-  const sel = document.getElementById('issuePartSelect').value;
-  const [partNo, location] = sel ? sel.split('|') : ['', ''];
+  const invId = document.getElementById('issuePartSelect').value;
+  const part = invId ? allInventory.find(p => p.id == invId) : null;
+  const req = allPendingRequests.find(r => r.id === activeIssueRequestId);
 
   await fetch(API_BASE + '/parts-requests/' + activeIssueRequestId, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: 'Issued', issued_time: new Date().toISOString(), part_no: partNo })
+    body: JSON.stringify({
+      status: 'Issued',
+      issued_time: new Date().toISOString(),
+      part_no: part ? part.part_no : '',
+      inventory_part_id: part ? part.id : null
+    })
   });
 
-  if (partNo && location) {
-    const part = allInventory.find(p => p.part_no === partNo && p.location === location);
-    const req = allPendingRequests.find(r => r.id === activeIssueRequestId);
-    if (part) {
-      await fetch(API_BASE + '/parts-inventory', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ part_no: partNo, location, stock_qty: Math.max(0, part.stock_qty - (req?.quantity||1)) })
-      });
-    }
+  if (part) {
+    await fetch(API_BASE + '/parts-inventory', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: part.id, stock_qty: Math.max(0, part.stock_qty - (req?.quantity||1)) })
+    });
   }
 
   document.getElementById('issueModal').classList.remove('show');
