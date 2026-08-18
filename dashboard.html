@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bullmer Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const MACHINE_TYPES = [
   { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
@@ -81,6 +82,27 @@ tr:hover td { background: #fafafa; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); padding: 12px 22px; border-radius: 10px; font-size: 14px; font-weight: 600; color: white; opacity: 0; transition: all 0.3s; z-index: 1001; }
 .toast.success { background: #3B6D11; } .toast.error { background: #A32D2D; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.chart-wrap { position: relative; height: 220px; }
+.hm-table { border-collapse: separate; border-spacing: 3px; font-size: 12px; width: 100%; }
+.hm-table th { font-size: 10px; font-weight: 700; color: #888; padding: 4px 6px; text-align: center; }
+.hm-table th.row-hdr { text-align: left; min-width: 180px; }
+.hm-cell { min-width: 50px; height: 32px; border-radius: 4px; text-align: center; vertical-align: middle; font-size: 11px; font-weight: 600; }
+.hm-empty { background: #f5f5f5; color: #ccc; }
+.hm-low { background: #C0DD97; color: #27500A; }
+.hm-mid { background: #FAEEDA; color: #633806; }
+.hm-high { background: #F5C4B3; color: #712B13; }
+.hm-vhigh { background: #F0997B; color: #4A1B0C; }
+
+.collapse-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
+.collapse-toggle { font-size: 11px; color: #888; font-weight: 600; white-space: nowrap; }
+
+#backToTopBtn {
+  display: none; position: fixed; bottom: 24px; right: 24px; width: 46px; height: 46px;
+  border-radius: 50%; background: #1F3864; color: white; border: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3); cursor: pointer; z-index: 150;
+  align-items: center; justify-content: center; font-size: 20px;
+}
 </style>
 </head>
 <body>
@@ -116,6 +138,24 @@ tr:hover td { background: #fafafa; }
       <div class="kpi green"><div class="kpi-label">Avg repair</div><div class="kpi-value" id="dtKpiRepair">—</div></div>
       <div class="kpi blue"><div class="kpi-label">Total downtime</div><div class="kpi-value" id="dtKpiTotalMins">—</div></div>
     </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div class="card">
+        <div class="card-title">Downtime per site</div>
+        <div class="chart-wrap"><canvas id="dtSiteChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Downtime trend</div>
+        <div class="chart-wrap"><canvas id="dtTrendChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Fault types heatmap</div>
+      <div class="chart-sub" style="font-size:11px;color:#888;margin-bottom:10px;">Incident count by fault and site — reacts to the date/location filters above</div>
+      <div style="overflow-x:auto;" id="faultHeatmap"></div>
+    </div>
+
     <div class="card">
       <div class="card-title">Incidents</div>
       <div style="overflow-x:auto;" id="dtTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
@@ -190,9 +230,14 @@ tr:hover td { background: #fafafa; }
     </div>
 
     <div class="card">
-      <div class="card-title">Stock catalogue</div>
-      <input type="text" id="invSearch" placeholder="Search part name or number..." oninput="renderInventoryTable()" style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;">
-      <div style="overflow-x:auto;" id="invTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      <div class="collapse-header" onclick="toggleCatalogue()">
+        <div class="card-title" style="margin-bottom:0;">Stock catalogue <span id="catalogueCount" style="font-weight:400;color:#888;"></span></div>
+        <span class="collapse-toggle" id="catalogueToggleLabel">Collapse ▲</span>
+      </div>
+      <div id="catalogueBody" style="margin-top:12px;">
+        <input type="text" id="invSearch" placeholder="Search part name or number..." oninput="renderInventoryTable()" style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;">
+        <div style="overflow-x:auto;" id="invTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
     </div>
 
     <div class="card">
@@ -420,6 +465,10 @@ function renderDowntime(rows) {
     ? fmtMins(Math.round(avgRepair.reduce((s,r)=>s+r.repair_minutes,0)/avgRepair.length)) : '—';
   document.getElementById('dtKpiTotalMins').textContent = fmtMins(totalMins);
 
+  renderDowntimePerSite(rows);
+  renderDowntimeTrend(rows);
+  renderFaultHeatmap(rows);
+
   const el = document.getElementById('dtTable');
   if (rows.length === 0) { el.innerHTML = '<div class="empty">No incidents in this range.</div>'; return; }
 
@@ -433,6 +482,104 @@ function renderDowntime(rows) {
   html += '</tbody></table>';
   el.innerHTML = html;
 }
+
+let dtSiteChartInstance = null;
+let dtTrendChartInstance = null;
+
+function renderDowntimePerSite(rows) {
+  const resolved = rows.filter(r => r.status === 'Resolved');
+  const byLoc = {};
+  LOCATIONS.forEach(l => byLoc[l] = 0);
+  resolved.forEach(r => { if (byLoc[r.line] !== undefined) byLoc[r.line] += (r.total_downtime_minutes || 0); });
+
+  const ctx = document.getElementById('dtSiteChart').getContext('2d');
+  if (dtSiteChartInstance) dtSiteChartInstance.destroy();
+  dtSiteChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: LOCATIONS,
+      datasets: [{ label: 'Downtime (min)', data: LOCATIONS.map(l => byLoc[l]), backgroundColor: ['#2D7D46', '#1B4F8A'], borderRadius: 4 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => ' ' + fmtMins(item.raw) } } },
+      scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 11 } } } }
+    }
+  });
+}
+
+function renderDowntimeTrend(rows) {
+  const resolved = rows.filter(r => r.status === 'Resolved' && r.reported_time);
+  const byDay = {};
+  resolved.forEach(r => {
+    const d = r.reported_time.split('T')[0];
+    byDay[d] = (byDay[d] || 0) + (r.total_downtime_minutes || 0);
+  });
+  const days = Object.keys(byDay).sort();
+
+  const ctx = document.getElementById('dtTrendChart').getContext('2d');
+  if (dtTrendChartInstance) dtTrendChartInstance.destroy();
+  dtTrendChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: days.map(d => { const p = d.split('-'); return p[2] + '/' + p[1]; }),
+      datasets: [{
+        label: 'Downtime (min)', data: days.map(d => byDay[d]),
+        borderColor: '#ED7D31', backgroundColor: 'rgba(237,125,49,0.15)',
+        fill: true, tension: 0.3, pointRadius: 3
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => ' ' + fmtMins(item.raw) } } },
+      scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 }, maxRotation: 45, minRotation: 45 } } }
+    }
+  });
+}
+
+function faultHeatCellClass(count, max) {
+  if (count === 0) return 'hm-empty';
+  const pct = count / Math.max(max, 1);
+  if (pct < 0.25) return 'hm-low';
+  if (pct < 0.5)  return 'hm-mid';
+  if (pct < 0.75) return 'hm-high';
+  return 'hm-vhigh';
+}
+
+function renderFaultHeatmap(rows) {
+  const knownFaults = [...new Set([...FAULTS_BY_TYPE['AUTO-CUTTER'], ...FAULTS_BY_TYPE['AUTO-SPREADER']])];
+  const customFaults = [...new Set(rows.map(r => r.fault).filter(f => f && !knownFaults.includes(f)))];
+  const faultRows = [...knownFaults, ...customFaults];
+
+  const counts = {};
+  let maxCount = 0;
+  faultRows.forEach(f => {
+    counts[f] = {};
+    LOCATIONS.forEach(l => {
+      const c = rows.filter(r => r.fault === f && r.line === l).length;
+      counts[f][l] = c;
+      if (c > maxCount) maxCount = c;
+    });
+  });
+
+  const el = document.getElementById('faultHeatmap');
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">No data for the selected filters.</div>'; return; }
+
+  let html = '<table class="hm-table"><thead><tr><th class="row-hdr">Fault</th>' +
+    LOCATIONS.map(l => `<th>${l}</th>`).join('') + '<th>Total</th></tr></thead><tbody>';
+  faultRows.forEach(f => {
+    const rowTotal = LOCATIONS.reduce((s, l) => s + counts[f][l], 0);
+    html += `<tr><td style="font-weight:600;font-size:12px;">${f}</td>` +
+      LOCATIONS.map(l => {
+        const c = counts[f][l];
+        return `<td class="hm-cell ${faultHeatCellClass(c, maxCount)}" title="${l} — ${f}: ${c}">${c > 0 ? c : ''}</td>`;
+      }).join('') +
+      `<td style="text-align:center;font-weight:700;font-size:12px;">${rowTotal || ''}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // PM TAB
@@ -579,6 +726,9 @@ function renderInventoryTable() {
   const q = (document.getElementById('invSearch').value || '').toLowerCase();
   const filtered = q.length < 2 ? allInventory : allInventory.filter(p =>
     (p.description||'').toLowerCase().includes(q) || (p.part_no||'').toLowerCase().includes(q));
+
+  document.getElementById('catalogueCount').textContent =
+    '(' + filtered.length + (q.length >= 2 ? ' of ' + allInventory.length : '') + ')';
 
   const el = document.getElementById('invTable');
   if (filtered.length === 0) { el.innerHTML = '<div class="empty">No parts found.</div>'; return; }
@@ -946,6 +1096,22 @@ async function markSupplierReturned(id) {
 // Dashboard loads immediately — no full-page login. Only the two actions
 // that add/consume stock (save part, issue part) prompt for a PIN.
 initDashboard();
+
+function toggleCatalogue() {
+  const body = document.getElementById('catalogueBody');
+  const label = document.getElementById('catalogueToggleLabel');
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  label.textContent = isOpen ? 'Expand ▼' : 'Collapse ▲';
+}
+
+window.addEventListener('scroll', () => {
+  const btn = document.getElementById('backToTopBtn');
+  if (!btn) return;
+  btn.style.display = window.scrollY > 400 ? 'flex' : 'none';
+});
 </script>
+
+<button id="backToTopBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top">↑</button>
 </body>
 </html>
