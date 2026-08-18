@@ -94,61 +94,63 @@ async function getPartsInventory(request, env) {
   return json(results);
 }
 
-// Upsert one part (catalogue add/edit, and CSV import calls this per row).
+// Insert a new part if no id is given, or update an existing row by id.
+// part_no is NOT unique — duplicate/missing part numbers are expected for
+// generic parts, so this never overwrites a different row based on part_no.
 async function postPartsInventory(request, env) {
   const body = await request.json();
-  if (!body.part_no || !body.location) {
-    return json({ error: 'part_no and location required' }, 400);
+  if (!body.location) return json({ error: 'location required' }, 400);
+
+  const now = new Date().toISOString();
+
+  if (body.id) {
+    await env.DB.prepare(
+      `UPDATE parts_inventory SET
+         part_no = ?, description = ?, stock_qty = ?, min_qty = ?,
+         machine_type = ?, supplier = ?, draw_number = ?, unit_price = ?,
+         location = ?, updated_at = ?
+       WHERE id = ?`
+    ).bind(
+      body.part_no || null, body.description || '', body.stock_qty || 0, body.min_qty || 0,
+      body.machine_type || null, body.supplier || null, body.draw_number || null,
+      body.unit_price != null ? body.unit_price : null, body.location, now, body.id
+    ).run();
+    return json({ id: body.id, success: true });
   }
 
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `INSERT INTO parts_inventory
-      (part_no, location, description, stock_qty, min_qty, machine_type, supplier, draw_number, unit_price, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(part_no, location) DO UPDATE SET
-       description = excluded.description,
-       stock_qty = excluded.stock_qty,
-       min_qty = excluded.min_qty,
-       machine_type = excluded.machine_type,
-       supplier = excluded.supplier,
-       draw_number = excluded.draw_number,
-       unit_price = excluded.unit_price,
-       updated_at = excluded.updated_at`
+      (part_no, description, stock_qty, min_qty, machine_type, supplier, draw_number, unit_price, location, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
-    body.part_no, body.location, body.description || '',
-    body.stock_qty || 0, body.min_qty || 0, body.machine_type || null,
-    body.supplier || null, body.draw_number || null,
-    body.unit_price != null ? body.unit_price : null,
-    new Date().toISOString()
+    body.part_no || null, body.description || '', body.stock_qty || 0, body.min_qty || 0,
+    body.machine_type || null, body.supplier || null, body.draw_number || null,
+    body.unit_price != null ? body.unit_price : null, body.location, now
   ).run();
 
-  return json({ success: true });
+  return json({ id: result.meta.last_row_id, success: true }, 201);
 }
 
-// Quick stock-quantity-only adjustment (Adjust Stock screen).
+// Quick stock-quantity-only adjustment (Adjust Stock screen), by id.
 async function patchPartsInventory(request, env) {
   const body = await request.json();
-  if (!body.part_no || !body.location || body.stock_qty == null) {
-    return json({ error: 'part_no, location, and stock_qty required' }, 400);
+  if (!body.id || body.stock_qty == null) {
+    return json({ error: 'id and stock_qty required' }, 400);
   }
 
   await env.DB.prepare(
-    `UPDATE parts_inventory SET stock_qty = ?, updated_at = ? WHERE part_no = ? AND location = ?`
-  ).bind(body.stock_qty, new Date().toISOString(), body.part_no, body.location).run();
+    `UPDATE parts_inventory SET stock_qty = ?, updated_at = ? WHERE id = ?`
+  ).bind(body.stock_qty, new Date().toISOString(), body.id).run();
 
   return json({ success: true });
 }
 
 async function deletePartsInventory(request, env) {
   const url = new URL(request.url);
-  const partNo = url.searchParams.get('part_no');
-  const location = url.searchParams.get('location');
-  if (!partNo || !location) return json({ error: 'part_no and location required' }, 400);
+  const id = url.searchParams.get('id');
+  if (!id) return json({ error: 'id required' }, 400);
 
-  await env.DB.prepare(
-    `DELETE FROM parts_inventory WHERE part_no = ? AND location = ?`
-  ).bind(partNo, location).run();
-
+  await env.DB.prepare(`DELETE FROM parts_inventory WHERE id = ?`).bind(id).run();
   return json({ success: true });
 }
 
@@ -294,7 +296,7 @@ async function postPartsRequests(request, env) {
 }
 
 const PARTS_REQUEST_FIELDS = [
-  'status', 'issued_time', 'issued_by', 'part_no', 'quantity_returned', 'quantity_consumed'
+  'status', 'issued_time', 'issued_by', 'part_no', 'quantity_returned', 'quantity_consumed', 'inventory_part_id'
 ];
 
 async function patchPartsRequests(request, env, id) {
@@ -365,13 +367,25 @@ async function postPartsReturns(request, env) {
     ).bind(body.quantity_returned, consumed, req.id)
   ];
 
-  if (!isFaulty && req.part_no && req.line) {
-    statements.push(
-      env.DB.prepare(
-        `UPDATE parts_inventory SET stock_qty = stock_qty + ?, updated_at = ?
-         WHERE part_no = ? AND location = ?`
-      ).bind(body.quantity_returned, nowISO, req.part_no, req.line)
-    );
+  // Only restore stock for good-condition returns, and only if we know
+  // exactly which inventory row to credit. Prefer the exact row the part
+  // was issued from (inventory_part_id); fall back to a part_no+location
+  // match for older requests issued before that link existed.
+  if (!isFaulty) {
+    if (req.inventory_part_id) {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE parts_inventory SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?`
+        ).bind(body.quantity_returned, nowISO, req.inventory_part_id)
+      );
+    } else if (req.part_no && req.line) {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE parts_inventory SET stock_qty = stock_qty + ?, updated_at = ?
+           WHERE part_no = ? AND location = ?`
+        ).bind(body.quantity_returned, nowISO, req.part_no, req.line)
+      );
+    }
   }
 
   await env.DB.batch(statements);
