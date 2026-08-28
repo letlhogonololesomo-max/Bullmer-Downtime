@@ -97,6 +97,11 @@ tr:hover td { background: #fafafa; }
 .collapse-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
 .collapse-toggle { font-size: 11px; color: #888; font-weight: 600; white-space: nowrap; }
 
+/* PIN modal must always sit above any other open modal (e.g. the CSV
+   import preview) — same .modal-overlay class means same z-index by
+   default, which was letting the preview cover the PIN input. */
+#pinModal { z-index: 2000; }
+
 #backToTopBtn {
   display: none; position: fixed; bottom: 24px; right: 24px; width: 46px; height: 46px;
   border-radius: 50%; background: #1F3864; color: white; border: none;
