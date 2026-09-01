@@ -169,14 +169,44 @@ tr:hover td { background: #fafafa; }
 
   <!-- ═══ PM TAB ═══ -->
   <div class="panel" id="panel-pm">
-    <div class="kpi-grid">
-      <div class="kpi blue"><div class="kpi-label">Total PM visits</div><div class="kpi-value" id="pmKpiTotal">—</div></div>
-      <div class="kpi orange"><div class="kpi-label">Major services</div><div class="kpi-value" id="pmKpiMajor">—</div></div>
-      <div class="kpi red"><div class="kpi-label">Poor condition flags</div><div class="kpi-value" id="pmKpiPoor">—</div></div>
+    <div class="filter-bar">
+      <label>From</label><input type="date" id="pmFrom" onchange="loadPM()">
+      <label>To</label><input type="date" id="pmTo" onchange="loadPM()">
+      <button class="btn grey" onclick="clearPmFilter()">Clear</button>
+      <button class="btn grey" onclick="setPmLast30()">Last 30 days</button>
     </div>
+
+    <div class="kpi-grid">
+      <div class="kpi blue"><div class="kpi-label">PM visits (in range)</div><div class="kpi-value" id="pmKpiTotal">—</div></div>
+      <div class="kpi green"><div class="kpi-label">Compliance rate</div><div class="kpi-value" id="pmKpiCompliance">—</div></div>
+      <div class="kpi red"><div class="kpi-label">Missed daily checks</div><div class="kpi-value" id="pmKpiMissed">—</div></div>
+      <div class="kpi orange"><div class="kpi-label">Parts replaced</div><div class="kpi-value" id="pmKpiParts">—</div></div>
+    </div>
+
     <div class="card">
-      <div class="card-title">Recent PM activity</div>
-      <div style="overflow-x:auto;" id="pmTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      <div class="card-title">Missed daily checks per asset <span style="font-weight:400;color:#888;font-size:11px;">— expected weekdays with no daily checklist logged</span></div>
+      <div class="chart-wrap" style="height:260px;"><canvas id="pmMissedChart"></canvas></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div class="card">
+        <div class="card-title">Daily check compliance trend</div>
+        <div class="chart-wrap"><canvas id="pmComplianceChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Top replaced parts <span style="font-weight:400;color:#888;font-size:11px;">— fleet-wide, in range</span></div>
+        <div class="chart-wrap"><canvas id="pmTopPartsChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="collapse-header" onclick="togglePmDetail()">
+        <div class="card-title" style="margin-bottom:0;">PM visit log <span id="pmDetailCount" style="font-weight:400;color:#888;"></span></div>
+        <span class="collapse-toggle" id="pmDetailToggleLabel">Expand ▼</span>
+      </div>
+      <div id="pmDetailBody" style="display:none;margin-top:12px;">
+        <div style="overflow-x:auto;" id="pmTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
     </div>
   </div>
 
@@ -394,7 +424,7 @@ function switchTab(tab) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
   if (tab === 'downtime')  loadDowntime();
-  if (tab === 'pm')        loadPM();
+  if (tab === 'pm')        { if (!document.getElementById('pmFrom').dataset.initialized) { document.getElementById('pmFrom').dataset.initialized = '1'; setPmLast30(); } else { loadPM(); } }
   if (tab === 'profile')   loadAssetDropdown();
   if (tab === 'inventory') loadInventory();
 }
@@ -589,16 +619,103 @@ function renderFaultHeatmap(rows) {
 // ═══════════════════════════════════════════════════════════════════
 // PM TAB
 // ═══════════════════════════════════════════════════════════════════
-async function loadPM() {
-  const res = await fetch(API_BASE + '/pm-log');
-  const rows = await res.json();
-  renderPM(rows);
+function setPmLast30() {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - 30);
+  document.getElementById('pmFrom').value = from.toISOString().split('T')[0];
+  document.getElementById('pmTo').value = to.toISOString().split('T')[0];
+  loadPM();
 }
 
-function renderPM(rows) {
+function clearPmFilter() {
+  document.getElementById('pmFrom').value = '';
+  document.getElementById('pmTo').value = '';
+  loadPM();
+}
+
+function togglePmDetail() {
+  const body = document.getElementById('pmDetailBody');
+  const label = document.getElementById('pmDetailToggleLabel');
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  label.textContent = isOpen ? 'Expand ▼' : 'Collapse ▲';
+}
+
+// A working day is any weekday — both PMT and PCN run Mon-Fri (PCN just
+// finishes early on Fridays, which doesn't affect whether a daily check
+// was expected that day).
+function isWorkingDay(dateStr) {
+  const day = new Date(dateStr + 'T12:00:00').getDay();
+  return day !== 0 && day !== 6;
+}
+
+function countWorkingDays(fromStr, toStr) {
+  let count = 0;
+  const cur = new Date(fromStr + 'T12:00:00');
+  const end = new Date(toStr + 'T12:00:00');
+  while (cur <= end) {
+    if (cur.getDay() !== 0 && cur.getDay() !== 6) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+async function loadPM() {
+  const from = document.getElementById('pmFrom').value;
+  const to = document.getElementById('pmTo').value;
+
+  let url = API_BASE + '/pm-log';
+  if (from || to) {
+    url += '?' + [from ? 'from=' + from : '', to ? 'to=' + to : ''].filter(Boolean).join('&');
+  }
+  const res = await fetch(url);
+  const rows = await res.json();
+
+  const partsUrl = API_BASE + '/parts-requests';
+  const partsRes = await fetch(partsUrl);
+  let parts = await partsRes.json();
+  if (from) parts = parts.filter(p => (p.requested_time || '').split('T')[0] >= from);
+  if (to)   parts = parts.filter(p => (p.requested_time || '').split('T')[0] <= to);
+
+  renderPM(rows, parts, from, to);
+}
+
+function renderPM(rows, parts, from, to) {
   document.getElementById('pmKpiTotal').textContent = rows.length;
-  document.getElementById('pmKpiMajor').textContent = rows.filter(r => r.service_type === 'major').length;
-  document.getElementById('pmKpiPoor').textContent = rows.filter(r => r.machine_condition === 'Poor').length;
+  document.getElementById('pmKpiParts').textContent = parts.filter(p => p.status === 'Issued').length;
+  document.getElementById('pmDetailCount').textContent = '(' + rows.length + ')';
+
+  // ── Missed daily checks per asset ──────────────────────────────────
+  const dailyRows = rows.filter(r => r.service_type === 'daily');
+  const assetLocation = {};
+  dailyRows.forEach(r => { if (r.asset_no && r.location) assetLocation[r.asset_no] = r.location; });
+
+  const rangeFrom = from || (dailyRows.length ? dailyRows.reduce((min, r) => r.completed_date < min ? r.completed_date : min, dailyRows[0].completed_date) : null);
+  const rangeTo = to || new Date().toISOString().split('T')[0];
+
+  let missedData = [];
+  if (rangeFrom) {
+    const expectedDays = countWorkingDays(rangeFrom, rangeTo);
+    Object.keys(assetLocation).forEach(assetNo => {
+      const daysCovered = new Set(dailyRows.filter(r => r.asset_no === assetNo).map(r => r.completed_date));
+      const missed = Math.max(0, expectedDays - daysCovered.size);
+      missedData.push({ asset: assetNo, missed, expected: expectedDays, covered: daysCovered.size });
+    });
+    missedData.sort((a, b) => b.missed - a.missed);
+  }
+
+  const totalExpected = missedData.reduce((s, d) => s + d.expected, 0);
+  const totalCovered = missedData.reduce((s, d) => s + d.covered, 0);
+  const totalMissed = missedData.reduce((s, d) => s + d.missed, 0);
+  const complianceRate = totalExpected > 0 ? Math.round((totalCovered / totalExpected) * 100) : null;
+
+  document.getElementById('pmKpiCompliance').textContent = complianceRate != null ? complianceRate + '%' : '—';
+  document.getElementById('pmKpiMissed').textContent = totalMissed;
+
+  renderPmMissedChart(missedData);
+  renderPmComplianceTrend(dailyRows, rangeFrom, rangeTo);
+  renderPmTopParts(parts);
 
   const el = document.getElementById('pmTable');
   if (rows.length === 0) { el.innerHTML = '<div class="empty">No PM visits logged yet.</div>'; return; }
@@ -613,6 +730,123 @@ function renderPM(rows) {
   });
   html += '</tbody></table>';
   el.innerHTML = html;
+}
+
+let pmMissedChartInstance = null;
+let pmComplianceChartInstance = null;
+let pmTopPartsChartInstance = null;
+
+function renderPmMissedChart(missedData) {
+  const ctx = document.getElementById('pmMissedChart').getContext('2d');
+  if (pmMissedChartInstance) pmMissedChartInstance.destroy();
+  if (missedData.length === 0) return;
+
+  pmMissedChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: missedData.map(d => d.asset),
+      datasets: [{
+        label: 'Missed days', data: missedData.map(d => d.missed),
+        backgroundColor: missedData.map(d => d.missed === 0 ? '#70AD47' : d.missed <= 3 ? '#ED7D31' : '#C00000'),
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (item) => {
+          const d = missedData[item.dataIndex];
+          return ` ${d.missed} missed of ${d.expected} expected (${d.covered} logged)`;
+        }}}
+      },
+      scales: { y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } }
+    }
+  });
+}
+
+function renderPmComplianceTrend(dailyRows, rangeFrom, rangeTo) {
+  const ctx = document.getElementById('pmComplianceChart').getContext('2d');
+  if (pmComplianceChartInstance) pmComplianceChartInstance.destroy();
+  if (!rangeFrom || dailyRows.length === 0) return;
+
+  // Weekly buckets: for each week, expected = working days × distinct
+  // assets checked at least once anywhere in range; actual = distinct
+  // (asset, date) pairs logged that week.
+  const assetsInRange = new Set(dailyRows.map(r => r.asset_no));
+  const weekBuckets = {};
+  const cur = new Date(rangeFrom + 'T12:00:00');
+  const end = new Date(rangeTo + 'T12:00:00');
+  while (cur <= end) {
+    if (cur.getDay() !== 0 && cur.getDay() !== 6) {
+      const weekStart = new Date(cur);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday of this week
+      const key = weekStart.toISOString().split('T')[0];
+      weekBuckets[key] = (weekBuckets[key] || 0) + assetsInRange.size;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  const actualByWeek = {};
+  dailyRows.forEach(r => {
+    const d = new Date(r.completed_date + 'T12:00:00');
+    const weekStart = new Date(d);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
+    const key = weekStart.toISOString().split('T')[0];
+    if (!actualByWeek[key]) actualByWeek[key] = new Set();
+    actualByWeek[key].add(r.asset_no + '|' + r.completed_date);
+  });
+
+  const weeks = Object.keys(weekBuckets).sort();
+  const rates = weeks.map(w => {
+    const expected = weekBuckets[w];
+    const actual = actualByWeek[w] ? actualByWeek[w].size : 0;
+    return expected > 0 ? Math.round((actual / expected) * 100) : null;
+  });
+
+  pmComplianceChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: weeks.map(w => { const p = w.split('-'); return p[2] + '/' + p[1]; }),
+      datasets: [{
+        label: 'Compliance %', data: rates,
+        borderColor: '#2E5597', backgroundColor: 'rgba(46,85,151,0.12)',
+        fill: true, tension: 0.3, pointRadius: 3
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => ' ' + item.raw + '%' } } },
+      scales: { y: { beginAtZero: true, max: 100, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 }, maxRotation: 45, minRotation: 45 } } }
+    }
+  });
+}
+
+function renderPmTopParts(parts) {
+  const ctx = document.getElementById('pmTopPartsChart').getContext('2d');
+  if (pmTopPartsChartInstance) pmTopPartsChartInstance.destroy();
+
+  const issued = parts.filter(p => p.status === 'Issued' && p.part_description);
+  const counts = {};
+  issued.forEach(p => {
+    const key = p.part_description.trim();
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  if (sorted.length === 0) return;
+
+  pmTopPartsChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: sorted.map(([name]) => name.length > 28 ? name.slice(0, 26) + '…' : name),
+      datasets: [{ label: 'Times replaced', data: sorted.map(([,c]) => c), backgroundColor: '#6B3FA0', borderRadius: 4 }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
