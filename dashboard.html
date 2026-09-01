@@ -684,14 +684,18 @@ async function loadAssetProfile() {
   }
 
   partsHtml += parts.length === 0 ? '<div class="empty">No parts issued.</div>' :
-    '<table><thead><tr><th>Date</th><th>Part</th><th>Qty</th><th>Status</th><th>Mechanic</th></tr></thead><tbody>' +
+    '<table><thead><tr><th>Date</th><th>Part</th><th>Qty</th><th>Status</th><th>Mechanic</th><th>Source</th></tr></thead><tbody>' +
     parts.map(r => {
       const key = (r.part_description || '').trim().toLowerCase();
       const isRepeat = r.status === 'Issued' && partCounts[key] >= 2;
+      const sourceLabel = r.source === 'pm_check' ? 'PM check (historical)'
+        : r.source === 'comment_note' ? 'PM comment (historical)'
+        : 'Job card';
       return `<tr${isRepeat ? ' style="background:#FFF8F8;"' : ''}>
         <td>${fmtDateTime(r.requested_time)}</td>
         <td>${r.part_description||'—'}${isRepeat ? ' <span class="pill pill-oos" style="margin-left:4px;">' + partCounts[key] + 'x</span>' : ''}</td>
         <td>x${r.quantity}</td><td>${r.status}</td><td>${r.mechanic||'—'}</td>
+        <td style="font-size:11px;color:#888;">${sourceLabel}</td>
       </tr>`;
     }).join('') +
     '</tbody></table>';
