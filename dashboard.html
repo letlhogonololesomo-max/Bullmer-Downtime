@@ -172,6 +172,10 @@ tr:hover td { background: #fafafa; }
     <div class="filter-bar">
       <label>From</label><input type="date" id="pmFrom" onchange="loadPM()">
       <label>To</label><input type="date" id="pmTo" onchange="loadPM()">
+      <span style="font-size:12px;font-weight:700;color:#555;">Location:</span>
+      <button id="pmSecAll" onclick="setPmLocation('')" class="section-btn active" style="--sc:#1F3864;">All</button>
+      <button id="pmSecPMT" onclick="setPmLocation('PMT')" class="section-btn" style="--sc:#2D7D46;">PMT</button>
+      <button id="pmSecPCN" onclick="setPmLocation('PCN')" class="section-btn" style="--sc:#1B4F8A;">PCN</button>
       <button class="btn grey" onclick="clearPmFilter()">Clear</button>
       <button class="btn grey" onclick="setPmLast30()">Last 30 days</button>
     </div>
@@ -184,7 +188,12 @@ tr:hover td { background: #fafafa; }
     </div>
 
     <div class="card">
-      <div class="card-title">Missed daily checks per asset <span style="font-weight:400;color:#888;font-size:11px;">— expected weekdays with no daily checklist logged</span></div>
+      <div class="card-title">Compliance by site <span style="font-weight:400;color:#888;font-size:11px;">— PMT vs PCN, always shown regardless of the location filter above</span></div>
+      <div class="chart-wrap" style="height:180px;"><canvas id="pmSiteCompareChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Missed daily checks per asset <span style="font-weight:400;color:#888;font-size:11px;">— expected weekdays with no daily checklist logged (excludes SA public holidays and the year-end shutdown)</span></div>
       <div class="chart-wrap" style="height:260px;"><canvas id="pmMissedChart"></canvas></div>
     </div>
 
@@ -628,10 +637,20 @@ function setPmLast30() {
   loadPM();
 }
 
+let activePmLocation = '';
+
+function setPmLocation(loc) {
+  activePmLocation = loc;
+  ['pmSecAll','pmSecPMT','pmSecPCN'].forEach(id => document.getElementById(id).classList.remove('active'));
+  const btnId = loc === 'PMT' ? 'pmSecPMT' : loc === 'PCN' ? 'pmSecPCN' : 'pmSecAll';
+  document.getElementById(btnId).classList.add('active');
+  loadPM();
+}
+
 function clearPmFilter() {
   document.getElementById('pmFrom').value = '';
   document.getElementById('pmTo').value = '';
-  loadPM();
+  setPmLocation('');
 }
 
 function togglePmDetail() {
@@ -645,9 +664,40 @@ function togglePmDetail() {
 // A working day is any weekday — both PMT and PCN run Mon-Fri (PCN just
 // finishes early on Fridays, which doesn't affect whether a daily check
 // was expected that day).
+// ── SA public holidays + year-end shutdown ──────────────────────────
+// Computed via the standard Easter algorithm + the Public Holidays Act's
+// Sunday-rule (falls on Sunday -> following Monday also becomes a holiday).
+// Covers 2025-2027; extend this list by the same rule for later years.
+const SA_PUBLIC_HOLIDAYS = new Set([
+  '2025-01-01','2025-03-21','2025-04-18','2025-04-21','2025-04-27','2025-04-28',
+  '2025-05-01','2025-06-16','2025-08-09','2025-09-24','2025-12-16','2025-12-25','2025-12-26',
+  '2026-01-01','2026-03-21','2026-04-03','2026-04-06','2026-04-27',
+  '2026-05-01','2026-06-16','2026-08-09','2026-08-10','2026-09-24','2026-12-16','2026-12-25','2026-12-26',
+  '2027-01-01','2027-03-21','2027-03-22','2027-03-26','2027-03-29','2027-04-27',
+  '2027-05-01','2027-06-16','2027-08-09','2027-09-24','2027-12-16','2027-12-25','2027-12-26','2027-12-27'
+]);
+
+// Year-end shutdown: last Friday before Christmas through the day before
+// the Tuesday of the second week of January. [start, end] inclusive.
+const YEAR_END_SHUTDOWNS = [
+  { start: '2024-12-20', end: '2025-01-13' },
+  { start: '2025-12-19', end: '2026-01-12' },
+  { start: '2026-12-18', end: '2027-01-11' }
+];
+
+function isShutdown(dateStr) {
+  return YEAR_END_SHUTDOWNS.some(s => dateStr >= s.start && dateStr <= s.end);
+}
+
+// A working day is a weekday that isn't a public holiday and isn't inside
+// the year-end shutdown — both PMT and PCN run Mon-Fri (PCN just finishes
+// early on Fridays, which doesn't affect whether a daily check was expected).
 function isWorkingDay(dateStr) {
   const day = new Date(dateStr + 'T12:00:00').getDay();
-  return day !== 0 && day !== 6;
+  if (day === 0 || day === 6) return false;
+  if (SA_PUBLIC_HOLIDAYS.has(dateStr)) return false;
+  if (isShutdown(dateStr)) return false;
+  return true;
 }
 
 function countWorkingDays(fromStr, toStr) {
@@ -655,7 +705,7 @@ function countWorkingDays(fromStr, toStr) {
   const cur = new Date(fromStr + 'T12:00:00');
   const end = new Date(toStr + 'T12:00:00');
   while (cur <= end) {
-    if (cur.getDay() !== 0 && cur.getDay() !== 6) count++;
+    if (isWorkingDay(cur.toISOString().split('T')[0])) count++;
     cur.setDate(cur.getDate() + 1);
   }
   return count;
@@ -670,13 +720,22 @@ async function loadPM() {
     url += '?' + [from ? 'from=' + from : '', to ? 'to=' + to : ''].filter(Boolean).join('&');
   }
   const res = await fetch(url);
-  const rows = await res.json();
+  const allRows = await res.json();
 
-  const partsUrl = API_BASE + '/parts-requests';
-  const partsRes = await fetch(partsUrl);
-  let parts = await partsRes.json();
-  if (from) parts = parts.filter(p => (p.requested_time || '').split('T')[0] >= from);
-  if (to)   parts = parts.filter(p => (p.requested_time || '').split('T')[0] <= to);
+  const partsRes = await fetch(API_BASE + '/parts-requests');
+  let allParts = await partsRes.json();
+  if (from) allParts = allParts.filter(p => (p.requested_time || '').split('T')[0] >= from);
+  if (to)   allParts = allParts.filter(p => (p.requested_time || '').split('T')[0] <= to);
+
+  // Site comparison always uses the full, location-unfiltered dataset —
+  // that's the whole point, seeing both sites side by side regardless of
+  // which one (if any) is currently selected in the filter.
+  renderPmSiteCompare(allRows, from, to);
+
+  // Everything else (KPIs, missed-days chart, trend, table) respects the
+  // active PMT/PCN filter.
+  const rows = activePmLocation ? allRows.filter(r => r.location === activePmLocation) : allRows;
+  const parts = activePmLocation ? allParts.filter(p => p.line === activePmLocation) : allParts;
 
   renderPM(rows, parts, from, to);
 }
@@ -736,6 +795,56 @@ let pmMissedChartInstance = null;
 let pmComplianceChartInstance = null;
 let pmTopPartsChartInstance = null;
 
+let pmSiteCompareChartInstance = null;
+
+function renderPmSiteCompare(allRows, from, to) {
+  const ctx = document.getElementById('pmSiteCompareChart').getContext('2d');
+  if (pmSiteCompareChartInstance) pmSiteCompareChartInstance.destroy();
+
+  const siteStats = LOCATIONS.map(site => {
+    const siteDaily = allRows.filter(r => r.service_type === 'daily' && r.location === site);
+    if (siteDaily.length === 0) return { site, compliance: null, missed: 0, expected: 0 };
+
+    const assets = [...new Set(siteDaily.map(r => r.asset_no))];
+    const rangeFrom = from || siteDaily.reduce((min, r) => r.completed_date < min ? r.completed_date : min, siteDaily[0].completed_date);
+    const rangeTo = to || new Date().toISOString().split('T')[0];
+    const expectedPerAsset = countWorkingDays(rangeFrom, rangeTo);
+
+    let totalCovered = 0;
+    assets.forEach(a => {
+      totalCovered += new Set(siteDaily.filter(r => r.asset_no === a).map(r => r.completed_date)).size;
+    });
+    const totalExpected = expectedPerAsset * assets.length;
+    return {
+      site, expected: totalExpected, covered: totalCovered,
+      missed: Math.max(0, totalExpected - totalCovered),
+      compliance: totalExpected > 0 ? Math.round((totalCovered / totalExpected) * 100) : null
+    };
+  });
+
+  pmSiteCompareChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: siteStats.map(s => s.site),
+      datasets: [{
+        label: 'Compliance %', data: siteStats.map(s => s.compliance),
+        backgroundColor: ['#2D7D46', '#1B4F8A'], borderRadius: 4
+      }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (item) => {
+          const s = siteStats[item.dataIndex];
+          return s.compliance != null ? ` ${s.compliance}% — ${s.missed} missed of ${s.expected} expected` : ' No data';
+        }}}
+      },
+      scales: { x: { beginAtZero: true, max: 100, ticks: { font: { size: 11 } } }, y: { ticks: { font: { size: 12 } } } }
+    }
+  });
+}
+
 function renderPmMissedChart(missedData) {
   const ctx = document.getElementById('pmMissedChart').getContext('2d');
   if (pmMissedChartInstance) pmMissedChartInstance.destroy();
@@ -778,7 +887,7 @@ function renderPmComplianceTrend(dailyRows, rangeFrom, rangeTo) {
   const cur = new Date(rangeFrom + 'T12:00:00');
   const end = new Date(rangeTo + 'T12:00:00');
   while (cur <= end) {
-    if (cur.getDay() !== 0 && cur.getDay() !== 6) {
+    if (isWorkingDay(cur.toISOString().split('T')[0])) {
       const weekStart = new Date(cur);
       weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday of this week
       const key = weekStart.toISOString().split('T')[0];
