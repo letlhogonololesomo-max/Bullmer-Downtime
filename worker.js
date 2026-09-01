@@ -50,6 +50,8 @@ async function postMasterData(request, env) {
 async function getPmLog(request, env) {
   const url = new URL(request.url);
   const assetNo = url.searchParams.get('asset_no');
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
 
   if (assetNo) {
     const { results } = await env.DB.prepare(
@@ -58,7 +60,20 @@ async function getPmLog(request, env) {
     return json(results);
   }
 
-  // No asset filter — recent PM activity for the dashboard, most recent first.
+  if (from || to) {
+    // Range query for dashboard charts/compliance — no aggressive cap, since
+    // the historical backfill alone is 3,500+ rows and truncating it would
+    // silently skew compliance math.
+    let sql = 'SELECT * FROM pm_log WHERE 1=1';
+    const binds = [];
+    if (from) { sql += ' AND completed_date >= ?'; binds.push(from); }
+    if (to)   { sql += ' AND completed_date <= ?'; binds.push(to); }
+    sql += ' ORDER BY completed_date DESC LIMIT 10000';
+    const { results } = await env.DB.prepare(sql).bind(...binds).all();
+    return json(results);
+  }
+
+  // No filter — recent PM activity for the dashboard, most recent first.
   const { results } = await env.DB.prepare(
     `SELECT * FROM pm_log ORDER BY completed_date DESC LIMIT 500`
   ).all();
@@ -286,9 +301,10 @@ async function getPartsRequests(request, env) {
     return json(results);
   }
 
-  // No filter — recent requests for the dashboard's "today's issues" view.
+  // No filter — recent requests for the dashboard's "today's issues" view
+  // and the Top Replaced Parts chart.
   const { results } = await env.DB.prepare(
-    `SELECT * FROM parts_requests ORDER BY requested_time DESC LIMIT 500`
+    `SELECT * FROM parts_requests ORDER BY requested_time DESC LIMIT 2000`
   ).all();
   return json(results);
 }
