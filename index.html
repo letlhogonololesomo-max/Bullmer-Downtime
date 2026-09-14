@@ -22,7 +22,9 @@
 // mechanic is confirming an unknown asset's type.
 const MACHINE_TYPES = [
   { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
-  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' }
+  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' },
+  { code: 'FUSING',        desc: 'Fusing press' },
+  { code: 'BANDKNIFE',     desc: 'Bandknife cutting machine' }
 ];
 
 // Faults an operator/supervisor can report, per machine type. Keys must
@@ -43,26 +45,59 @@ const FAULTS_BY_TYPE = {
     'Machine not moving',
     'Emergency stop not working',
     'Other'
+  ],
+  'FUSING': [
+    'Belt not moving',
+    'Unusual noise',
+    'Not reaching temperature',
+    'Belt is damaged',
+    'Machine not switching on',
+    'Other'
+  ],
+  'BANDKNIFE': [
+    'Machine not switching on',
+    'Unusual noise',
+    'Need new blade',
+    'Motor belt broke',
+    'Other'
   ]
 };
 
 // Root-cause / corrective-action codes a mechanic selects when resolving a
-// job card. Shared across both machine types.
-const ERROR_CODES = [
-  'Replaced part',
-  'Cleaned',
-  'Lubricated',
-  'Reset software',
-  'Other'
-];
+// job card. Bullmer machines (cutter/spreader) keep their original list —
+// Fusing/Bandknife are simpler electromechanical machines with no software
+// to reset, so they share a separate list instead.
+const RESOLVE_CODES_BY_TYPE = {
+  'AUTO-CUTTER':   ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
+  'AUTO-SPREADER': ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
+  'FUSING':        ['Electrical fault', 'Mechanical wear', 'Replaced part', 'Cleaned the machine', 'Lubricated the machine', 'Other'],
+  'BANDKNIFE':     ['Electrical fault', 'Mechanical wear', 'Replaced part', 'Cleaned the machine', 'Lubricated the machine', 'Other']
+};
 
-// Mechanic roster — shown in the "your name" selects.
-const MECHANICS = [
-  'Dean',
-  'Jody'
-];
+function getResolveCodesForType(machineType) {
+  if (machineType && RESOLVE_CODES_BY_TYPE[machineType]) return RESOLVE_CODES_BY_TYPE[machineType];
+  const all = new Set();
+  Object.values(RESOLVE_CODES_BY_TYPE).forEach(list => list.forEach(c => all.add(c)));
+  return [...all];
+}
 
-// Locations — replaces the old sewing-floor Line 1–24 / Pool A/B model.
+// Mechanic roster is category-specific: Dean/Jody handle Bullmer machines
+// (cutter/spreader); Barend handles Fusing and Bandknife.
+const MECHANICS_BY_TYPE = {
+  'AUTO-CUTTER':   ['Dean', 'Jody'],
+  'AUTO-SPREADER': ['Dean', 'Jody'],
+  'FUSING':        ['Barend'],
+  'BANDKNIFE':     ['Barend']
+};
+
+function getMechanicsForType(machineType) {
+  if (machineType && MECHANICS_BY_TYPE[machineType]) return MECHANICS_BY_TYPE[machineType];
+  const all = new Set();
+  Object.values(MECHANICS_BY_TYPE).forEach(list => list.forEach(m => all.add(m)));
+  return [...all];
+}
+
+// Locations — same PMT/PCN sites for every machine category.
 const LOCATIONS = [
   'PMT',
   'PCN'
@@ -190,11 +225,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .app { max-width: 480px; margin: 0 auto; padding: 16px; }
 
 /* ROLE SELECTOR */
-.role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.role-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px; }
 .role-btn { background: white; border: 2px solid #ddd; border-radius: 14px; padding: 24px 16px; text-align: center; cursor: pointer; transition: all 0.2s; }
 .role-btn:active { transform: scale(0.97); }
 .role-btn.supervisor:hover, .role-btn.supervisor.active { border-color: #1F3864; background: #EBF3FB; }
 .role-btn.mechanic:hover, .role-btn.mechanic.active { border-color: #70AD47; background: #E2EFDA; }
+.role-btn.pm:hover, .role-btn.pm.active { border-color: #6B3FA0; background: #EBE3F5; }
+.role-btn.fusing:hover, .role-btn.fusing.active { border-color: #C9A84C; background: #FFF8E7; }
+.role-btn.bandknife:hover, .role-btn.bandknife.active { border-color: #C9184A; background: #FDE8ED; }
 .role-icon { font-size: 32px; margin-bottom: 10px; }
 .role-title { font-size: 14px; font-weight: 700; color: #1a1a1a; }
 .role-sub { font-size: 11px; color: #888; margin-top: 3px; }
@@ -349,17 +387,38 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 
   <div class="card" style="margin-top:8px;">
-    <div class="card-title">Select your role</div>
+    <div class="card-title">Log a machine down</div>
     <div class="role-grid">
-      <div class="role-btn supervisor" onclick="goScreen('screenSupervisor')">
-        <div class="role-icon">👔</div>
-        <div class="role-title">Supervisor</div>
-        <div class="role-sub">Log a machine down</div>
+      <div class="role-btn supervisor" onclick="openSupervisorFlow('BULLMER')">
+        <div class="role-icon">⚙️</div>
+        <div class="role-title">Bullmer</div>
+        <div class="role-sub">Spreader / Cutter</div>
       </div>
+      <div class="role-btn fusing" onclick="openSupervisorFlow('FUSING')">
+        <div class="role-icon">🔥</div>
+        <div class="role-title">Fusing</div>
+        <div class="role-sub">Fusing press</div>
+      </div>
+      <div class="role-btn bandknife" onclick="openSupervisorFlow('BANDKNIFE')">
+        <div class="role-icon">🔪</div>
+        <div class="role-title">Bandknife</div>
+        <div class="role-sub">Cutting machine</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;">
+    <div class="card-title">Other</div>
+    <div class="role-grid" style="grid-template-columns:1fr 1fr;">
       <div class="role-btn mechanic" onclick="loadMechanicScreen()">
         <div class="role-icon">🔧</div>
         <div class="role-title">Mechanic</div>
         <div class="role-sub">View open job cards</div>
+      </div>
+      <div class="role-btn pm" onclick="goScreen('screenPM')">
+        <div class="role-icon">📋</div>
+        <div class="role-title">PM</div>
+        <div class="role-sub">Log a service visit</div>
       </div>
     </div>
   </div>
@@ -371,6 +430,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
     <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
     Back
   </button>
+
+  <div id="supCategoryBanner" style="text-align:center;font-size:13px;font-weight:700;color:#1F3864;margin-bottom:10px;letter-spacing:0.03em;text-transform:uppercase;"></div>
 
   <div id="supFormView">
     <div class="card">
@@ -611,6 +672,93 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 </div>
 
+<!-- ── PM: LOG PREVENTATIVE MAINTENANCE ───────────────────────────── -->
+<div class="app screen" id="screenPM">
+  <button class="back-btn" onclick="goScreen('screenHome')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+
+  <div id="pmFormView">
+    <div class="card">
+      <div class="card-title">Step 1 — Asset</div>
+      <button class="scan-btn" id="scanBtnPM" onclick="toggleScannerPM()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg>
+        Scan Machine Barcode
+      </button>
+      <div id="readerPM"></div>
+      <div class="or-divider">— or enter manually —</div>
+      <input class="manual-input" id="pmAssetInput" type="text" placeholder="Enter asset number..." oninput="pmSetAsset(cleanBarcode(this.value))">
+      <div class="asset-confirmed" id="pmAssetConfirmed">
+        <div style="flex:1">
+          <div class="num" id="pmAssetVal"></div>
+          <div class="type" id="pmMachineType"></div>
+        </div>
+        <div class="asset-check"><svg viewBox="0 0 13 13"><polyline points="2,7 5,10 11,3"/></svg></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 2 — Service details</div>
+      <div class="field">
+        <label>Location</label>
+        <select id="pmLocation" onchange="checkPmReady()">
+          <option value="">Select location...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Service type</label>
+        <select id="pmServiceType" onchange="checkPmReady()">
+          <option value="">Select service tier...</option>
+          <option value="minor">Minor</option>
+          <option value="normal">Normal</option>
+          <option value="major">Major</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Machine condition</label>
+        <select id="pmCondition" onchange="checkPmReady()">
+          <option value="">Select condition...</option>
+          <option>Excellent</option>
+          <option>Good</option>
+          <option>Average</option>
+          <option>Poor</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Completed by</label>
+        <select id="pmCompletedBy" onchange="checkPmReady()">
+          <option value="">Select your name...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Next PM due (optional)</label>
+        <input type="date" id="pmNextDue" class="manual-input" style="margin-top:0;">
+      </div>
+      <div class="field">
+        <label>Notes (optional)</label>
+        <textarea id="pmNotes" placeholder="Anything worth flagging for next time..."></textarea>
+      </div>
+    </div>
+
+    <button class="submit-btn navy" id="pmSubmitBtn" onclick="submitPM()" disabled>
+      Log PM Visit
+    </button>
+  </div>
+
+  <!-- Success -->
+  <div id="pmSuccessView" style="display:none">
+    <div class="card">
+      <div class="success-screen">
+        <div class="big-check"><svg viewBox="0 0 36 36"><polyline points="6,18 14,26 30,10"/></svg></div>
+        <h2>PM Logged</h2>
+        <p id="pmSuccessDetail">Service visit recorded</p>
+        <button class="next-btn" onclick="resetPM()">Log Another</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- DUPLICATE TICKET BLOCK OVERLAY -->
@@ -636,11 +784,25 @@ const API_BASE = '/api';
 
 let currentAssetNo = '';
 let currentMachineType = '';
+let supervisorCategory = 'BULLMER'; // 'BULLMER' | 'FUSING' | 'BANDKNIFE' — which Home-screen icon was used
 let currentJobId = null;
 let currentJobData = null;
 let supScanner = null;
 let supScannerActive = false;
 let allJobs = [];
+
+const SUPERVISOR_CATEGORY_LABELS = { 'BULLMER': 'Bullmer — Spreader / Cutter', 'FUSING': 'Fusing Press', 'BANDKNIFE': 'Bandknife' };
+
+// Called from the Home screen's Bullmer/Fusing/Bandknife icons. Fusing and
+// Bandknife have no sub-types, so the machine type is fully known the
+// moment the icon is tapped — no master_data lookup needed to disambiguate,
+// unlike Bullmer (which still needs the lookup to tell Spreader from Cutter).
+function openSupervisorFlow(category) {
+  supervisorCategory = category;
+  document.getElementById('supCategoryBanner').textContent = SUPERVISOR_CATEGORY_LABELS[category] || category;
+  resetSupervisor();
+  goScreen('screenSupervisor');
+}
 
 // ── CONFIG-DRIVEN SETUP ───────────────────────────────────────────
 // Populates every select that depends on config.js so this file has no
@@ -650,21 +812,38 @@ function populateConfigDrivenSelects() {
   const locSel = document.getElementById('supLine');
   locSel.innerHTML = '<option value="">Select location...</option>' +
     LOCATIONS.map(l => '<option>' + l + '</option>').join('');
+  document.getElementById('pmLocation').innerHTML = '<option value="">Select location...</option>' +
+    LOCATIONS.map(l => '<option>' + l + '</option>').join('');
 
-  // Mechanic roster — appears in three separate selects
-  const mechHTML = '<option value="">Select your name...</option>' +
-    MECHANICS.map(m => '<option>' + m + '</option>').join('');
-  ['investigateMechName', 'partsRequestMechanic', 'mechName'].forEach(id => {
-    document.getElementById(id).innerHTML = mechHTML;
+  // Mechanic rosters and resolve codes are category-specific (Dean/Jody on
+  // Bullmer, Barend on Fusing/Bandknife) — start with the union of everyone
+  // until the specific machine type is known, then narrow at the right
+  // moment (asset scan for Supervisor/PM, job-open for Mechanic).
+  ['investigateMechName', 'partsRequestMechanic', 'mechName', 'pmCompletedBy'].forEach(id => {
+    populateMechanicSelect(id, null);
   });
-
-  // Error codes (resolve step) — shared across both machine types
-  document.getElementById('mechErrorCode').innerHTML =
-    '<option value="">Select error code...</option>' +
-    ERROR_CODES.map(c => '<option>' + c + '</option>').join('');
+  populateResolveCodeDropdown(null);
 
   // Fault dropdown starts with the combined list (asset not scanned yet)
   populateFaultDropdown(null);
+}
+
+// Populates a "your name" select with the roster for a given machine type
+// (or the union of every mechanic if type is unknown/not yet confirmed).
+// Preserves the current selection if it's still valid for the new list.
+function populateMechanicSelect(selectId, machineType) {
+  const list = getMechanicsForType(machineType);
+  const el = document.getElementById(selectId);
+  const prevVal = el.value;
+  el.innerHTML = '<option value="">Select your name...</option>' +
+    list.map(m => '<option' + (m === prevVal ? ' selected' : '') + '>' + m + '</option>').join('');
+}
+
+function populateResolveCodeDropdown(machineType) {
+  const list = getResolveCodesForType(machineType);
+  document.getElementById('mechErrorCode').innerHTML =
+    '<option value="">Select error code...</option>' +
+    list.map(c => '<option>' + c + '</option>').join('');
 }
 
 // Fault list depends on machine type, which is only known after the asset
@@ -758,23 +937,33 @@ function stopScannerSup() {
 
 async function supSetAsset(val) {
   const conf = document.getElementById('supAssetConfirmed');
-  if (!val) {
+  if (!val || !isValidBarcode(val)) {
     currentAssetNo = '';
     conf.style.display = 'none';
-    populateFaultDropdown(null);
-    checkSupReady();
-    return;
-  }
-
-  // Validate format before looking up
-  if (!isValidBarcode(val)) {
-    currentAssetNo = '';
-    conf.style.display = 'none';
-    populateFaultDropdown(null);
+    populateFaultDropdown(supervisorCategory === 'BULLMER' ? null : supervisorCategory);
     checkSupReady();
     return;
   }
   currentAssetNo = val;
+
+  if (supervisorCategory !== 'BULLMER') {
+    // Fusing/Bandknife: no sub-types, so the type is already known from the
+    // icon tapped on the Home screen — no lookup round-trip needed. Just
+    // confirm instantly and quietly keep master_data in sync in the
+    // background (fire-and-forget; doesn't block the form).
+    currentMachineType = supervisorCategory;
+    document.getElementById('supAssetVal').textContent = val;
+    document.getElementById('supMachineType').textContent = 'Type: ' + currentMachineType;
+    document.getElementById('supMachineType').style.color = '#3B6D11';
+    conf.style.display = 'flex';
+    populateFaultDropdown(currentMachineType);
+    checkSupReady();
+    fetch(API_BASE + '/master-data', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_no: val, asset_type: currentMachineType })
+    }).catch(() => {}); // best-effort registry sync — never blocks the supervisor
+    return;
+  }
 
   document.getElementById('supAssetVal').textContent = val;
   document.getElementById('supMachineType').textContent = 'Looking up...';
@@ -972,9 +1161,11 @@ function resetSupervisor() {
   // Stop scanner if running
   if (supScannerActive) stopScannerSup();
 
-  // Reset state
+  // Reset state — Fusing/Bandknife keep their machine type fixed to the
+  // category (no lookup needed to know it), Bullmer clears it since the
+  // next asset scanned could be either a Spreader or a Cutter.
   currentAssetNo = '';
-  currentMachineType = '';
+  currentMachineType = supervisorCategory === 'BULLMER' ? '' : supervisorCategory;
 
   // Reset form fields
   document.getElementById('supAssetInput').value = '';
@@ -982,7 +1173,7 @@ function resetSupervisor() {
   document.getElementById('supMachineType').textContent = '';
   document.getElementById('supMachineType').style.color = '';
   document.getElementById('supLine').value = '';
-  populateFaultDropdown(null);
+  populateFaultDropdown(supervisorCategory === 'BULLMER' ? null : supervisorCategory);
   document.getElementById('supFault').value = '';
 
   // Show form, hide success
@@ -996,6 +1187,172 @@ function resetSupervisor() {
 
   // Scroll to top of form
   document.getElementById('screenSupervisor').scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+// ── PM SCREEN ──────────────────────────────────────────────────────
+let pmAssetNo = '';
+let pmMachineType = '';
+let pmScanner = null;
+let pmScannerActive = false;
+
+function toggleScannerPM() {
+  if (pmScannerActive) stopScannerPM();
+  else startScannerPM();
+}
+
+function startScannerPM() {
+  const btn = document.getElementById('scanBtnPM');
+  btn.classList.add('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Stop Camera`;
+  document.getElementById('readerPM').style.display = 'block';
+  pmScannerActive = true;
+
+  let lastRead = '';
+  let lastReadTime = 0;
+  const DEBOUNCE_MS = 300;
+
+  pmScanner = new Html5Qrcode('readerPM');
+  pmScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 100 } },
+    (decoded) => {
+      const clean = cleanBarcode(decoded);
+      const now = Date.now();
+      if (clean === lastRead && (now - lastReadTime) < DEBOUNCE_MS) {
+        if (!isValidBarcode(clean)) {
+          showToast('Invalid barcode: ' + clean + ' — check and try again.', 'error');
+          lastRead = ''; lastReadTime = 0;
+          return;
+        }
+        pmSetAsset(clean);
+        document.getElementById('pmAssetInput').value = clean;
+        stopScannerPM();
+        showToast('Barcode scanned!', 'success');
+      } else {
+        lastRead = clean; lastReadTime = now;
+      }
+    }, () => {}
+  ).catch(() => { showToast('Camera blocked. Use manual entry.', 'error'); stopScannerPM(); });
+}
+
+function stopScannerPM() {
+  if (pmScanner) { pmScanner.stop().catch(() => {}); pmScanner = null; }
+  document.getElementById('readerPM').style.display = 'none';
+  const btn = document.getElementById('scanBtnPM');
+  btn.classList.remove('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg> Scan Machine Barcode`;
+  pmScannerActive = false;
+}
+
+async function pmSetAsset(val) {
+  const conf = document.getElementById('pmAssetConfirmed');
+  if (!val || !isValidBarcode(val)) {
+    pmAssetNo = '';
+    conf.style.display = 'none';
+    populateMechanicSelect('pmCompletedBy', null);
+    checkPmReady();
+    return;
+  }
+  pmAssetNo = val;
+
+  document.getElementById('pmAssetVal').textContent = val;
+  document.getElementById('pmMachineType').textContent = 'Looking up...';
+  document.getElementById('pmMachineType').style.color = '#888';
+  conf.style.display = 'flex';
+  document.getElementById('pmSubmitBtn').disabled = true;
+
+  try {
+    const res = await fetch(API_BASE + '/master-data?asset_no=' + encodeURIComponent(val));
+    const data = await res.json();
+    if (data && data.asset_type) {
+      pmMachineType = data.asset_type;
+      document.getElementById('pmMachineType').textContent = 'Type: ' + pmMachineType;
+      document.getElementById('pmMachineType').style.color = '#3B6D11';
+    } else {
+      pmMachineType = 'Unknown';
+      document.getElementById('pmMachineType').textContent = 'Not found in master data — will save as Unknown';
+      document.getElementById('pmMachineType').style.color = '#888';
+    }
+  } catch(e) {
+    pmMachineType = 'Unknown';
+    document.getElementById('pmMachineType').textContent = 'Connection issue — will save as Unknown';
+    document.getElementById('pmMachineType').style.color = '#C00000';
+  }
+  populateMechanicSelect('pmCompletedBy', pmMachineType);
+  checkPmReady();
+}
+
+function checkPmReady() {
+  const ready = pmAssetNo &&
+    document.getElementById('pmLocation').value &&
+    document.getElementById('pmServiceType').value &&
+    document.getElementById('pmCondition').value &&
+    document.getElementById('pmCompletedBy').value;
+  document.getElementById('pmSubmitBtn').disabled = !ready;
+}
+
+let submittingPM = false;
+
+async function submitPM() {
+  if (submittingPM) return;
+  submittingPM = true;
+
+  const btn = document.getElementById('pmSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Logging...';
+
+  const payload = {
+    asset_no: pmAssetNo,
+    machine_type: pmMachineType,
+    location: document.getElementById('pmLocation').value,
+    service_type: document.getElementById('pmServiceType').value,
+    completed_by: document.getElementById('pmCompletedBy').value,
+    completed_date: new Date().toISOString().split('T')[0],
+    machine_condition: document.getElementById('pmCondition').value,
+    next_due_date: document.getElementById('pmNextDue').value || null,
+    overall_note: document.getElementById('pmNotes').value.trim()
+  };
+
+  try {
+    const res = await fetch(API_BASE + '/pm-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok || res.status === 201) {
+      document.getElementById('pmFormView').style.display = 'none';
+      document.getElementById('pmSuccessView').style.display = 'block';
+      document.getElementById('pmSuccessDetail').textContent =
+        pmAssetNo + ' (' + pmMachineType + ') — ' + payload.service_type + ' service at ' + payload.location;
+      setTimeout(() => resetPM(), 2500);
+    } else {
+      showToast('Error logging PM. Please try again.', 'error');
+      btn.disabled = false; btn.textContent = 'Log PM Visit';
+    }
+  } catch(e) {
+    showToast('Connection error.', 'error');
+    btn.disabled = false; btn.textContent = 'Log PM Visit';
+  } finally {
+    submittingPM = false;
+  }
+}
+
+function resetPM() {
+  if (pmScannerActive) stopScannerPM();
+  pmAssetNo = '';
+  pmMachineType = '';
+  document.getElementById('pmAssetInput').value = '';
+  document.getElementById('pmAssetConfirmed').style.display = 'none';
+  document.getElementById('pmLocation').value = '';
+  document.getElementById('pmServiceType').value = '';
+  document.getElementById('pmCondition').value = '';
+  document.getElementById('pmCompletedBy').value = '';
+  document.getElementById('pmNextDue').value = '';
+  document.getElementById('pmNotes').value = '';
+  document.getElementById('pmFormView').style.display = 'block';
+  document.getElementById('pmSuccessView').style.display = 'none';
+  const btn = document.getElementById('pmSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Log PM Visit';
   window.scrollTo(0, 0);
 }
 
@@ -1257,6 +1614,7 @@ async function confirmMachineType() {
     if (cached) cached.machine_type = type;
 
     document.getElementById('machineTypeConfirmSection').style.display = 'none';
+    populateMechanicSelect('investigateMechName', type);
     document.getElementById('investigateSection').style.display = 'block';
 
     // Refresh header to show the confirmed type
@@ -1328,6 +1686,7 @@ function openJobDetail(id) {
     if (machineTypeUnknown) {
       showMachineTypeConfirm();
     } else {
+      populateMechanicSelect('investigateMechName', j.machine_type);
       document.getElementById('investigateSection').style.display = 'block';
     }
   } else if (j.status === 'Investigating') {
@@ -1458,7 +1817,7 @@ function showPartsRequest() {
   document.getElementById('partsRequestSection').style.display = 'block';
   const mt = (currentJobData && currentJobData.machine_type) ? currentJobData.machine_type : '—';
   document.getElementById('partsJobMachineType').textContent = mt;
-  document.getElementById('partsRequestMechanic').value = '';
+  populateMechanicSelect('partsRequestMechanic', currentJobData ? currentJobData.machine_type : null);
   pendingRequests = [];
   renderExistingRequests();
   document.getElementById('partDescInput').focus();
@@ -1467,6 +1826,9 @@ function showPartsRequest() {
 function showResolveSection() {
   document.getElementById('partsDecisionSection').style.display = 'none';
   document.getElementById('partsRequestSection').style.display = 'none';
+  const mt = currentJobData ? currentJobData.machine_type : null;
+  populateMechanicSelect('mechName', mt);
+  populateResolveCodeDropdown(mt);
   document.getElementById('resolveSection').style.display = 'block';
 }
 
