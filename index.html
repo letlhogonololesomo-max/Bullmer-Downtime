@@ -387,7 +387,30 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 
   <div class="card" style="margin-top:8px;">
-    <div class="card-title">Log a machine down</div>
+    <div class="card-title">Select your role</div>
+    <div class="role-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="role-btn supervisor" onclick="goScreen('screenSupervisorCategory')">
+        <div class="role-icon">👔</div>
+        <div class="role-title">Supervisor</div>
+        <div class="role-sub">Log a machine down</div>
+      </div>
+      <div class="role-btn mechanic" onclick="loadMechanicScreen()">
+        <div class="role-icon">🔧</div>
+        <div class="role-title">Mechanic</div>
+        <div class="role-sub">View open job cards</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SUPERVISOR: MACHINE CATEGORY PICKER ────────────────────────── -->
+<div class="app screen" id="screenSupervisorCategory">
+  <button class="back-btn" onclick="goScreen('screenHome')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+  <div class="card">
+    <div class="card-title">Select machine type</div>
     <div class="role-grid">
       <div class="role-btn supervisor" onclick="openSupervisorFlow('BULLMER')">
         <div class="role-icon">⚙️</div>
@@ -395,30 +418,14 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
         <div class="role-sub">Spreader / Cutter</div>
       </div>
       <div class="role-btn fusing" onclick="openSupervisorFlow('FUSING')">
-        <div class="role-icon">🔥</div>
+        <div class="role-icon">⚙️</div>
         <div class="role-title">Fusing</div>
         <div class="role-sub">Fusing press</div>
       </div>
       <div class="role-btn bandknife" onclick="openSupervisorFlow('BANDKNIFE')">
-        <div class="role-icon">🔪</div>
+        <div class="role-icon">⚙️</div>
         <div class="role-title">Bandknife</div>
         <div class="role-sub">Cutting machine</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:14px;">
-    <div class="card-title">Other</div>
-    <div class="role-grid" style="grid-template-columns:1fr 1fr;">
-      <div class="role-btn mechanic" onclick="loadMechanicScreen()">
-        <div class="role-icon">🔧</div>
-        <div class="role-title">Mechanic</div>
-        <div class="role-sub">View open job cards</div>
-      </div>
-      <div class="role-btn pm" onclick="goScreen('screenPM')">
-        <div class="role-icon">📋</div>
-        <div class="role-title">PM</div>
-        <div class="role-sub">Log a service visit</div>
       </div>
     </div>
   </div>
