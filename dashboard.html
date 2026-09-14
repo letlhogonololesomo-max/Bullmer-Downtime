@@ -8,13 +8,17 @@
 <script>
 const MACHINE_TYPES = [
   { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
-  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' }
+  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' },
+  { code: 'FUSING',        desc: 'Fusing press' },
+  { code: 'BANDKNIFE',     desc: 'Bandknife cutting machine' }
 ];
 const FAULTS_BY_TYPE = {
   'AUTO-CUTTER': ['Machine not cutting','Vacuum insufficient','Machine not feeding','Sensor error','Machine locked','Other'],
-  'AUTO-SPREADER': ['Machine not feeding','Sensor error','Machine not cutting','Machine not moving','Emergency stop not working','Other']
+  'AUTO-SPREADER': ['Machine not feeding','Sensor error','Machine not cutting','Machine not moving','Emergency stop not working','Other'],
+  'FUSING': ['Belt not moving','Unusual noise','Not reaching temperature','Belt is damaged','Machine not switching on','Other'],
+  'BANDKNIFE': ['Machine not switching on','Unusual noise','Need new blade','Motor belt broke','Other']
 };
-const MECHANICS = ['Dean', 'Jody'];
+const MECHANICS = ['Dean', 'Jody', 'Barend'];
 const LOCATIONS = ['PMT', 'PCN'];
 </script>
 <style>
@@ -120,7 +124,7 @@ tr:hover td { background: #fafafa; }
 <div class="main">
   <div class="tabs">
     <div class="tab active" onclick="switchTab('downtime')">Downtime</div>
-    <div class="tab" onclick="switchTab('pm')">Preventative Maintenance</div>
+    <div class="tab" onclick="switchTab('pm')" style="display:none;">Preventative Maintenance</div>
     <div class="tab" onclick="switchTab('profile')">Asset Profile</div>
     <div class="tab" onclick="switchTab('inventory')">Inventory</div>
   </div>
@@ -192,6 +196,8 @@ tr:hover td { background: #fafafa; }
       <div style="display:flex;gap:14px;margin-bottom:10px;font-size:11px;color:#555;">
         <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#1B7D8A;display:inline-block;"></span>Auto-Spreader</span>
         <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#6B3FA0;display:inline-block;"></span>Auto-Cutter</span>
+        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#C9A84C;display:inline-block;"></span>Fusing</span>
+        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#C9184A;display:inline-block;"></span>Bandknife</span>
       </div>
       <div class="chart-wrap" style="height:260px;"><canvas id="pmMissedChart"></canvas></div>
     </div>
@@ -324,7 +330,7 @@ tr:hover td { background: #fafafa; }
       <select id="pfLocation"><option>PMT</option><option>PCN</option></select>
     </div>
     <div class="field"><label>Machine type</label>
-      <select id="pfMachineType"><option value="">—</option><option>AUTO-CUTTER</option><option>AUTO-SPREADER</option></select>
+      <select id="pfMachineType"><option value="">—</option><option>AUTO-CUTTER</option><option>AUTO-SPREADER</option><option>FUSING</option><option>BANDKNIFE</option></select>
     </div>
     <div class="field"><label>Supplier</label><input id="pfSupplier" type="text"></div>
     <div class="field"><label>Draw number</label><input id="pfDraw" type="text"></div>
@@ -606,7 +612,7 @@ function faultHeatCellClass(count, max) {
 }
 
 function renderFaultHeatmap(rows) {
-  const knownFaults = [...new Set([...FAULTS_BY_TYPE['AUTO-CUTTER'], ...FAULTS_BY_TYPE['AUTO-SPREADER']])];
+  const knownFaults = [...new Set(Object.values(FAULTS_BY_TYPE).flat())];
   const customFaults = [...new Set(rows.map(r => r.fault).filter(f => f && !knownFaults.includes(f)))];
   const faultRows = [...knownFaults, ...customFaults];
 
@@ -814,7 +820,7 @@ let pmTopPartsChartInstance = null;
 let pmMostPartsChartInstance = null;
 let pmAssetInfo = {}; // asset_no -> { location, machine_type } — built fresh each loadPM call
 
-const MACHINE_TYPE_COLOR = { 'AUTO-SPREADER': '#1B7D8A', 'AUTO-CUTTER': '#6B3FA0' };
+const MACHINE_TYPE_COLOR = { 'AUTO-SPREADER': '#1B7D8A', 'AUTO-CUTTER': '#6B3FA0', 'FUSING': '#C9A84C', 'BANDKNIFE': '#C9184A' };
 function colorForAsset(assetNo) {
   const info = pmAssetInfo[assetNo];
   return (info && MACHINE_TYPE_COLOR[info.machine_type]) || '#888';
