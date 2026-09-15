@@ -1971,14 +1971,20 @@ function loadMechName() {
 }
 
 function checkNotificationPrompt() {
-  try {
-    if (Notification.permission === 'default') {
+  OneSignalDeferred.push(function(OneSignal) {
+    try {
+      const optedIn = OneSignal.User.PushSubscription.optedIn;
       const dismissed = localStorage.getItem('pmt_notif_dismissed');
-      if (!dismissed) {
+      console.log('[notifPrompt check] optedIn=' + optedIn + ' dismissed=' + dismissed + ' Notification.permission=' + Notification.permission);
+      if (!optedIn && !dismissed) {
         document.getElementById('notifPrompt').style.display = 'block';
+      } else if (optedIn) {
+        // Already a real subscriber — make sure the dismissed flag is set
+        // too, so this stays consistent even if it wasn't set earlier.
+        try { localStorage.setItem('pmt_notif_dismissed', '1'); } catch(e) {}
       }
-    }
-  } catch(e) {}
+    } catch(e) { console.warn('checkNotificationPrompt error:', e); }
+  });
 }
 
 function enableNotifications() {
