@@ -10,16 +10,6 @@
 <title>C/ROOM Downtime Tracker</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
-// ═══════════════════════════════════════════════════════════════════════════
-// PMT SHARED CONFIG — Bullmer (Auto-Spreader / Auto-Cutter)
-// Loaded by downtime.html, scan.html, and the dashboard.
-// This is the single place to update machine types, fault lists, error
-// codes, mechanic roster, and locations — every screen reads from here.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Machine types — code must exactly match what's stored in master_data.asset_type
-// and downtime_log.machine_type. desc is shown alongside the code when a
-// mechanic is confirming an unknown asset's type.
 const MACHINE_TYPES = [
   { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
   { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' },
@@ -27,8 +17,6 @@ const MACHINE_TYPES = [
   { code: 'BANDKNIFE',     desc: 'Bandknife cutting machine' }
 ];
 
-// Faults an operator/supervisor can report, per machine type. Keys must
-// match MACHINE_TYPES codes exactly.
 const FAULTS_BY_TYPE = {
   'AUTO-CUTTER': [
     'Machine not cutting',
@@ -63,10 +51,6 @@ const FAULTS_BY_TYPE = {
   ]
 };
 
-// Root-cause / corrective-action codes a mechanic selects when resolving a
-// job card. Bullmer machines (cutter/spreader) keep their original list —
-// Fusing/Bandknife are simpler electromechanical machines with no software
-// to reset, so they share a separate list instead.
 const RESOLVE_CODES_BY_TYPE = {
   'AUTO-CUTTER':   ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
   'AUTO-SPREADER': ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
@@ -81,13 +65,11 @@ function getResolveCodesForType(machineType) {
   return [...all];
 }
 
-// Mechanic roster is category-specific: Dean/Jody handle Bullmer machines
-// (cutter/spreader); Barend handles Fusing and Bandknife.
 const MECHANICS_BY_TYPE = {
   'AUTO-CUTTER':   ['Dean', 'Jody'],
   'AUTO-SPREADER': ['Dean', 'Jody'],
   'FUSING':        ['Byron'],
-  'BANDKNIFE':     ['Jody','Byron']
+  'BANDKNIFE':     ['Jody']
 };
 
 function getMechanicsForType(machineType) {
@@ -97,15 +79,11 @@ function getMechanicsForType(machineType) {
   return [...all];
 }
 
-// Locations — same PMT/PCN sites for every machine category.
 const LOCATIONS = [
   'PMT',
   'PCN'
 ];
 
-// Returns the fault list for a given machine type. Falls back to the union
-// of all faults (deduped) if the type is unknown/unmapped, so a supervisor
-// can still log something before the machine type is confirmed.
 function getFaultListForType(machineType) {
   if (machineType && FAULTS_BY_TYPE[machineType]) return FAULTS_BY_TYPE[machineType];
   const all = new Set();
@@ -113,29 +91,20 @@ function getFaultListForType(machineType) {
   return [...all];
 }
 
-// ── SHIFT SCHEDULE (location-aware) ───────────────────────────────────────
-// PMT and PCN run different hours, and PCN finishes early on Fridays. This
-// is the single source of truth for shift math — downtime.html and the
-// dashboard both call into these functions rather than keeping their own
-// copies, so a schedule change only ever needs to happen here.
-//
-// [hour, minute] pairs, 24-hour clock.
 const SHIFT_SCHEDULE = {
   'PMT': {
-    weekday: { start: [7, 45], end: [16, 45] }, // Mon–Fri, no early finish
+    weekday: { start: [7, 45], end: [16, 45] },
     friday:  { start: [7, 45], end: [16, 45] }
   },
   'PCN': {
-    weekday: { start: [7, 30], end: [16, 30] }, // Mon–Thu
-    friday:  { start: [7, 30], end: [15, 15] }  // Fri — early finish
+    weekday: { start: [7, 30], end: [16, 30] },
+    friday:  { start: [7, 30], end: [15, 15] }
   }
 };
-const DEFAULT_SHIFT_LOCATION = 'PMT'; // fallback if a record has no/unknown location
+const DEFAULT_SHIFT_LOCATION = 'PMT';
 
-// Returns { start: Date, end: Date } for the given calendar date at the
-// given location, or null on a weekend (no shift that day).
 function getShiftForDate(date, location) {
-  const day = date.getDay(); // 0=Sun ... 6=Sat
+  const day = date.getDay();
   if (day === 0 || day === 6) return null;
   const sched = SHIFT_SCHEDULE[location] || SHIFT_SCHEDULE[DEFAULT_SHIFT_LOCATION];
   const times = (day === 5) ? sched.friday : sched.weekday;
@@ -144,7 +113,6 @@ function getShiftForDate(date, location) {
   return { start, end };
 }
 
-// Finds the next shift start strictly after fromDate, at the given location.
 function nextShiftStart(fromDate, location) {
   const d = new Date(fromDate);
   d.setDate(d.getDate() + 1);
@@ -156,8 +124,6 @@ function nextShiftStart(fromDate, location) {
   return null;
 }
 
-// Counts only minutes that fall within valid shift windows between two
-// timestamps, at the given location — walking across weekends/off-hours.
 function shiftAwareMinutes(startISO, endISO, location) {
   if (!startISO || !endISO) return 0;
   let current = new Date(startISO);
@@ -165,7 +131,7 @@ function shiftAwareMinutes(startISO, endISO, location) {
   if (current >= end) return 0;
 
   let totalMins = 0;
-  let safetyLimit = 0; // prevent infinite loop
+  let safetyLimit = 0;
 
   while (current < end && safetyLimit < 50) {
     safetyLimit++;
@@ -200,13 +166,10 @@ function shiftAwareMinutes(startISO, endISO, location) {
   return totalMins;
 }
 
-// Shift-aware minutes from startISO to now, at the given location.
 function shiftAwareElapsed(startISO, location) {
   return shiftAwareMinutes(startISO, new Date().toISOString(), location);
 }
 
-// Total shift length in minutes for a given date + location, or null on a
-// day with no shift. Used by the dashboard's daily-allowance calculations.
 function getShiftMinutesForDate(dateStr, location) {
   if (!dateStr) return null;
   const shift = getShiftForDate(new Date(dateStr), location);
@@ -232,9 +195,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .refresh-btn-header:active { background: rgba(255,255,255,0.3); }
 .refresh-btn-header.spinning svg { animation: spin 0.8s linear infinite; }
 
+.home-btn-header {
+  position: absolute; top: 50%; left: 16px; transform: translateY(-50%);
+  background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 8px; width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: white; transition: background 0.2s;
+}
+.home-btn-header:active { background: rgba(255,255,255,0.3); }
+
 .app { max-width: 480px; margin: 0 auto; padding: 16px; }
 
-/* ROLE SELECTOR */
 .role-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px; }
 .role-btn { background: white; border: 2px solid #ddd; border-radius: 14px; padding: 24px 16px; text-align: center; cursor: pointer; transition: all 0.2s; }
 .role-btn:active { transform: scale(0.97); }
@@ -244,18 +215,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .role-btn.fusing:hover, .role-btn.fusing.active { border-color: #C9A84C; background: #FFF8E7; }
 .role-btn.bandknife:hover, .role-btn.bandknife.active { border-color: #C9184A; background: #FDE8ED; }
 .role-icon { font-size: 32px; margin-bottom: 10px; }
+.role-icon img { width: 32px; height: 32px; object-fit: contain; }
 .role-title { font-size: 14px; font-weight: 700; color: #1a1a1a; }
 .role-sub { font-size: 11px; color: #888; margin-top: 3px; }
 
-/* SCREENS */
 .screen { display: none; }
 .screen.active { display: block; }
 
-/* CARDS */
 .card { background: white; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.07); }
 .card-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 12px; }
 
-/* FORM */
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 12px; font-weight: 700; color: #555; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
 select, textarea { width: 100%; padding: 13px 14px; border: 1.5px solid #ddd; border-radius: 10px; font-size: 15px; color: #1a1a1a; background: white; transition: border-color 0.2s; font-family: inherit; }
@@ -274,12 +243,10 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .manual-input:focus { outline: none; border-color: #2E5597; }
 .or-divider { text-align: center; font-size: 11px; color: #bbb; margin: 8px 0; }
 
-/* SCAN BTN */
 .scan-btn { width: 100%; padding: 15px; border: 2px dashed #2E5597; border-radius: 12px; background: #EBF3FB; color: #2E5597; font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
 .scan-btn.scanning { border-color: #ED7D31; background: #FFF2CC; color: #ED7D31; }
 #readerSup { border-radius: 8px; overflow: hidden; margin-top: 10px; display: none; }
 
-/* SUBMIT BTN */
 .submit-btn { width: 100%; padding: 17px; border: none; border-radius: 14px; color: white; font-size: 17px; font-weight: 700; cursor: pointer; transition: all 0.2s; margin-top: 4px; }
 .submit-btn.navy { background: #1F3864; }
 .submit-btn.navy:hover { background: #162B4D; }
@@ -290,11 +257,9 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .submit-btn:disabled { background: #ccc; color: #999; cursor: not-allowed; }
 .submit-btn:active:not(:disabled) { transform: scale(0.98); }
 
-/* BACK BTN */
 .back-btn { display: flex; align-items: center; gap: 6px; background: none; border: none; color: #2E5597; font-size: 13px; font-weight: 600; cursor: pointer; padding: 0; margin-bottom: 14px; }
 .back-btn svg { width: 16px; height: 16px; stroke: #2E5597; fill: none; stroke-width: 2.5; }
 
-/* SUCCESS */
 .success-screen { text-align: center; padding: 40px 20px; }
 .success-screen .big-check { width: 72px; height: 72px; background: #70AD47; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
 .success-screen .big-check svg { width: 36px; height: 36px; stroke: white; fill: none; stroke-width: 2.5; }
@@ -302,7 +267,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .success-screen p { font-size: 13px; color: #666; margin-top: 6px; }
 .next-btn { margin-top: 20px; padding: 14px 32px; background: #1F3864; border: none; border-radius: 10px; color: white; font-size: 15px; font-weight: 600; cursor: pointer; }
 
-/* JOB CARD LIST */
 .job-card { background: white; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.07); border-left: 4px solid #ED7D31; cursor: pointer; transition: background 0.15s; }
 .job-card:hover { background: #fafafa; }
 .job-card.completed { border-left-color: #70AD47; }
@@ -317,19 +281,16 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .pill-investigating { background: #DEEAF1; color: #1F497D; }
 .pill-completed { background: #E2EFDA; color: #3B6D11; }
 
-/* SUMMARY CARDS */
 .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
 .summary-card { background: white; border-radius: 10px; padding: 14px 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .summary-val { font-size: 26px; font-weight: 700; color: #1F3864; }
 .summary-lbl { font-size: 10px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 3px; }
 
-/* DOWNTIME TABLE */
 .dt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .dt-table th { text-align: left; font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; padding: 6px 8px; border-bottom: 2px solid #f0f2f5; }
 .dt-table td { padding: 8px 8px; border-bottom: 1px solid #f5f5f5; color: #333; }
 .dt-table tr:last-child td { border-bottom: none; }
 
-/* SECTION TABS */
 .mech-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .mech-tab { flex: 1; padding: 9px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; color: #666; background: white; transition: all 0.15s; }
 .mech-tab.active { background: #1F3864; color: white; border-color: #1F3864; }
@@ -337,7 +298,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .section { display: none; }
 .section.active { display: block; }
 
-/* DETAIL SCREEN */
 .detail-header { background: #1F3864; color: white; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
 .detail-asset { font-size: 22px; font-weight: 700; }
 .detail-type { font-size: 12px; opacity: 0.75; margin-top: 2px; }
@@ -349,10 +309,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 .time-pill-label { color: #888; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: 9px; }
 .time-pill-value { color: #1F3864; font-weight: 600; font-size: 12px; margin-top: 2px; }
 
-/* EMPTY STATE */
 .empty { text-align: center; padding: 50px 20px; color: #bbb; font-size: 14px; }
 
-/* TOAST */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); padding: 12px 24px; border-radius: 10px; font-size: 14px; font-weight: 600; color: white; opacity: 0; transition: all 0.3s; z-index: 999; max-width: 340px; text-align: center; }
 .toast.success { background: #3B6D11; }
 .toast.error { background: #A32D2D; }
@@ -363,7 +321,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 
-<!-- OneSignal Push Notifications -->
 <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <script>
   window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -379,6 +336,9 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 <body>
 
 <div class="header">
+  <button class="home-btn-header" id="homeBtnHeader" onclick="goHome()" title="Home">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+  </button>
   <button class="refresh-btn-header" id="refreshBtnHeader" onclick="refreshApp()" title="Refresh">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
   </button>
@@ -386,7 +346,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   <p>C/ROOM  Downtime incident management</p>
 </div>
 
-<!-- ── HOME: ROLE SELECTOR ────────────────────────────────────────── -->
 <div class="app" id="screenHome">
 
   <div class="card" style="margin-top:8px;">
@@ -403,19 +362,9 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
         <div class="role-sub">View open job cards</div>
       </div>
     </div>
-
-  <!-- Notification permission prompt — compact single-line banner -->
-  <div id="notifPrompt" style="display:none;background:#EBF3FB;border:1px solid #2E5597;border-radius:10px;padding:10px 12px;margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-    <div style="font-size:12px;color:#1F3864;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">🔔 Get notified of machine downtime</div>
-    <div style="display:flex;gap:6px;flex-shrink:0;">
-      <button onclick="enableNotifications()" style="padding:6px 12px;background:#1F3864;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;">Enable</button>
-      <button onclick="dismissNotifPrompt()" style="padding:6px 9px;background:white;color:#888;border:1px solid #ddd;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;">✕</button>
-    </div>
-  </div>
   </div>
 </div>
 
-<!-- ── SUPERVISOR: MACHINE CATEGORY PICKER ────────────────────────── -->
 <div class="app screen" id="screenSupervisorCategory">
   <button class="back-btn" onclick="goScreen('screenHome')">
     <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
@@ -430,12 +379,12 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
         <div class="role-sub">Spreader / Cutter</div>
       </div>
       <div class="role-btn fusing" onclick="openSupervisorFlow('FUSING')">
-        <div class="role-icon">⚙️</div>
+        <div class="role-icon"><img src="data:image/png;base64,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" alt="Fusing"></div>
         <div class="role-title">Fusing</div>
         <div class="role-sub">Fusing press</div>
       </div>
       <div class="role-btn bandknife" onclick="openSupervisorFlow('BANDKNIFE')">
-        <div class="role-icon">⚙️</div>
+        <div class="role-icon"><img src="data:image/png;base64,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" alt="Bandknife"></div>
         <div class="role-title">Bandknife</div>
         <div class="role-sub">Cutting machine</div>
       </div>
@@ -443,9 +392,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 </div>
 
-<!-- ── SUPERVISOR: LOG DOWNTIME ───────────────────────────────────── -->
 <div class="app screen" id="screenSupervisor">
-  <button class="back-btn" onclick="goScreen('screenHome')">
+  <button class="back-btn" onclick="goScreen('screenSupervisorCategory')">
     <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
     Back
   </button>
@@ -492,7 +440,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
     </button>
   </div>
 
-  <!-- Success -->
   <div id="supSuccessView" style="display:none">
     <div class="card">
       <div class="success-screen">
@@ -506,7 +453,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 </div>
 
-<!-- ── MECHANIC: JOB CARDS ────────────────────────────────────────── -->
 <div class="app screen" id="screenMechanic">
   <button class="back-btn" onclick="goScreen('screenHome')">
     <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
@@ -514,7 +460,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </button>
 
   <div id="mechListView">
-    <!-- Summary -->
     <div class="summary-grid" id="mechSummary">
       <div class="summary-card">
         <div class="summary-val" id="sumOpen">—</div>
@@ -530,24 +475,20 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </div>
     </div>
 
-    <!-- Tabs -->
     <div class="mech-tabs">
       <div class="mech-tab active" id="tabOpen" onclick="switchMechTab('open')">Open Jobs</div>
       <div class="mech-tab" id="tabDone" onclick="switchMechTab('done')">Completed</div>
       <div class="mech-tab" id="tabDowntime" onclick="switchMechTab('downtime')">Downtime</div>
     </div>
 
-    <!-- Open jobs -->
     <div class="section active" id="sectionOpen">
       <div id="openJobsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
     </div>
 
-    <!-- Completed -->
     <div class="section" id="sectionDone">
       <div id="doneJobsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
     </div>
 
-    <!-- Downtime summary -->
     <div class="section" id="sectionDowntime">
       <div class="card">
         <div class="card-title">Total downtime per location — today</div>
@@ -556,7 +497,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
     </div>
   </div>
 
-  <!-- Job detail view -->
   <div id="mechDetailView" style="display:none">
     <button class="back-btn" onclick="backToList()">
       <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
@@ -567,7 +507,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 
     <div class="time-row" id="detailTimes"></div>
 
-    <!-- Confirm machine type section (shown when machine_type is Unknown, before investigate) -->
     <div id="machineTypeConfirmSection" style="display:none">
       <div class="card" style="border:1.5px solid #ED7D31;">
         <div class="card-title" style="color:#ED7D31;">⚠ Machine type needed</div>
@@ -585,7 +524,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </div>
     </div>
 
-    <!-- Investigate section -->
     <div id="investigateSection" style="display:none">
       <div class="field" style="margin-bottom:12px;">
         <label>Your name</label>
@@ -598,7 +536,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </button>
     </div>
 
-    <!-- Parts decision section (shown after investigating) -->
     <div id="partsDecisionSection" style="display:none">
       <div class="card" style="margin-bottom:14px;">
         <div class="card-title">Spare parts required?</div>
@@ -614,18 +551,15 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </div>
     </div>
 
-    <!-- Parts request section -->
     <div id="partsRequestSection" style="display:none">
       <div class="card" style="margin-bottom:14px;">
         <div class="card-title">Request spare part</div>
 
-        <!-- Machine type display (auto from job card) -->
         <div style="background:#EBF3FB;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
           <span style="color:#888;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;">Machine type</span>
           <div style="font-size:15px;font-weight:700;color:#1F3864;margin-top:2px;" id="partsJobMachineType">—</div>
         </div>
 
-        <!-- Mechanic name — captured here so it's on the request -->
         <div class="field">
           <label>Your name</label>
           <select id="partsRequestMechanic" onchange="saveMechName();">
@@ -633,10 +567,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
           </select>
         </div>
 
-        <!-- Existing requests list -->
         <div id="existingRequestsList" style="margin-bottom:12px;"></div>
 
-        <!-- Add new request — free text -->
         <div class="field">
           <label>Part description</label>
           <input type="text" id="partDescInput" placeholder="e.g. Blade, Vacuum motor, Drive belt..."
@@ -657,7 +589,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </div>
     </div>
 
-    <!-- Resolve section -->
     <div id="resolveSection" style="display:none">
       <div class="card">
         <div class="card-title">Resolve job card</div>
@@ -683,7 +614,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
       </div>
     </div>
 
-    <!-- Completed view -->
     <div id="completedSection" style="display:none">
       <div class="card" id="completedDetails"></div>
       <div class="card" id="completedParts" style="display:none;margin-top:0;"></div>
@@ -691,7 +621,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
   </div>
 </div>
 
-<!-- ── PM: LOG PREVENTATIVE MAINTENANCE ───────────────────────────── -->
 <div class="app screen" id="screenPM">
   <button class="back-btn" onclick="goScreen('screenHome')">
     <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
@@ -765,7 +694,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
     </button>
   </div>
 
-  <!-- Success -->
   <div id="pmSuccessView" style="display:none">
     <div class="card">
       <div class="success-screen">
@@ -780,7 +708,6 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 
 <div class="toast" id="toast"></div>
 
-<!-- DUPLICATE TICKET BLOCK OVERLAY -->
 <div id="dupOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:flex-end;justify-content:center;">
   <div style="background:white;border-radius:20px 20px 0 0;padding:24px;width:100%;max-width:480px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
@@ -797,14 +724,8 @@ select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
 </div>
 
 <script>
-// Cloudflare Pages Functions live at /api/* on the same origin as this page —
-// no separate URL or exposed key needed, unlike the old Supabase setup.
 const API_BASE = '/api';
 
-// Manual refresh — a full reload is the most reliable way to guarantee
-// every screen's data (job lists, master-data lookups, in-memory state)
-// is genuinely current, rather than trying to partially re-fetch whatever
-// screen happens to be open.
 function refreshApp() {
   const btn = document.getElementById('refreshBtnHeader');
   if (btn) btn.classList.add('spinning');
@@ -813,7 +734,7 @@ function refreshApp() {
 
 let currentAssetNo = '';
 let currentMachineType = '';
-let supervisorCategory = 'BULLMER'; // 'BULLMER' | 'FUSING' | 'BANDKNIFE' — which Home-screen icon was used
+let supervisorCategory = 'BULLMER';
 let currentJobId = null;
 let currentJobData = null;
 let supScanner = null;
@@ -822,10 +743,6 @@ let allJobs = [];
 
 const SUPERVISOR_CATEGORY_LABELS = { 'BULLMER': 'Bullmer — Spreader / Cutter', 'FUSING': 'Fusing Press', 'BANDKNIFE': 'Bandknife' };
 
-// Called from the Home screen's Bullmer/Fusing/Bandknife icons. Fusing and
-// Bandknife have no sub-types, so the machine type is fully known the
-// moment the icon is tapped — no master_data lookup needed to disambiguate,
-// unlike Bullmer (which still needs the lookup to tell Spreader from Cutter).
 function openSupervisorFlow(category) {
   supervisorCategory = category;
   document.getElementById('supCategoryBanner').textContent = SUPERVISOR_CATEGORY_LABELS[category] || category;
@@ -833,33 +750,21 @@ function openSupervisorFlow(category) {
   goScreen('screenSupervisor');
 }
 
-// ── CONFIG-DRIVEN SETUP ───────────────────────────────────────────
-// Populates every select that depends on config.js so this file has no
-// hardcoded location/mechanic/error-code lists left in the markup.
 function populateConfigDrivenSelects() {
-  // Locations (replaces old Line 1-24 model)
   const locSel = document.getElementById('supLine');
   locSel.innerHTML = '<option value="">Select location...</option>' +
     LOCATIONS.map(l => '<option>' + l + '</option>').join('');
   document.getElementById('pmLocation').innerHTML = '<option value="">Select location...</option>' +
     LOCATIONS.map(l => '<option>' + l + '</option>').join('');
 
-  // Mechanic rosters and resolve codes are category-specific (Dean/Jody on
-  // Bullmer, Barend on Fusing/Bandknife) — start with the union of everyone
-  // until the specific machine type is known, then narrow at the right
-  // moment (asset scan for Supervisor/PM, job-open for Mechanic).
   ['investigateMechName', 'partsRequestMechanic', 'mechName', 'pmCompletedBy'].forEach(id => {
     populateMechanicSelect(id, null);
   });
   populateResolveCodeDropdown(null);
 
-  // Fault dropdown starts with the combined list (asset not scanned yet)
   populateFaultDropdown(null);
 }
 
-// Populates a "your name" select with the roster for a given machine type
-// (or the union of every mechanic if type is unknown/not yet confirmed).
-// Preserves the current selection if it's still valid for the new list.
 function populateMechanicSelect(selectId, machineType) {
   const list = getMechanicsForType(machineType);
   const el = document.getElementById(selectId);
@@ -875,10 +780,6 @@ function populateResolveCodeDropdown(machineType) {
     list.map(c => '<option>' + c + '</option>').join('');
 }
 
-// Fault list depends on machine type, which is only known after the asset
-// is scanned/looked up. Before that (or if the type is Unknown), show the
-// union of every machine type's faults so the supervisor can still log
-// something — the mechanic can correct machine_type later if needed.
 function populateFaultDropdown(machineType) {
   const sel = document.getElementById('supFault');
   const prevVal = sel.value;
@@ -888,7 +789,6 @@ function populateFaultDropdown(machineType) {
   checkSupReady();
 }
 
-// ── NAVIGATION ────────────────────────────────────────────────────
 function goScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -902,15 +802,23 @@ function showScreen(id) {
   goScreen(id);
 }
 
-// ── SUPERVISOR SCANNER ────────────────────────────────────────────
+// Jumps straight to Home from any screen, regardless of how deep the user
+// is (e.g. mid-way through a job card or the Supervisor form) — used by
+// the header's Home button. Stops any active scanner/live-timer first so
+// nothing keeps running in the background after leaving that screen.
+function goHome() {
+  if (supScannerActive) stopScannerSup();
+  if (pmScannerActive) stopScannerPM();
+  stopLiveTimer();
+  goScreen('screenHome');
+}
+
 function toggleScannerSup() {
   if (supScannerActive) stopScannerSup();
   else startScannerSup();
 }
 
 function cleanBarcode(val) {
-  // Normalise input — strip all whitespace, convert to uppercase
-  // Ensures 'prs1570', 'PRS 1570', 'Prs1570' all resolve to 'PRS1570'
   return val.replace(/\s+/g, '').toUpperCase();
 }
 
@@ -976,10 +884,6 @@ async function supSetAsset(val) {
   currentAssetNo = val;
 
   if (supervisorCategory !== 'BULLMER') {
-    // Fusing/Bandknife: no sub-types, so the type is already known from the
-    // icon tapped on the Home screen — no lookup round-trip needed. Just
-    // confirm instantly and quietly keep master_data in sync in the
-    // background (fire-and-forget; doesn't block the form).
     currentMachineType = supervisorCategory;
     document.getElementById('supAssetVal').textContent = val;
     document.getElementById('supMachineType').textContent = 'Type: ' + currentMachineType;
@@ -990,7 +894,7 @@ async function supSetAsset(val) {
     fetch(API_BASE + '/master-data', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ asset_no: val, asset_type: currentMachineType })
-    }).catch(() => {}); // best-effort registry sync — never blocks the supervisor
+    }).catch(() => {});
     return;
   }
 
@@ -998,30 +902,27 @@ async function supSetAsset(val) {
   document.getElementById('supMachineType').textContent = 'Looking up...';
   document.getElementById('supMachineType').style.color = '#888';
   conf.style.display = 'flex';
-  // Disable submit until lookup completes — prevents race condition
   document.getElementById('supSubmitBtn').disabled = true;
 
-  // Retry up to 3 times — handles cold start slow connections
   const MAX_ATTEMPTS = 3;
   let found = false;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (attempt > 1) {
       document.getElementById('supMachineType').textContent = 'Looking up... (attempt ' + attempt + ')';
-      await new Promise(r => setTimeout(r, 1000 * attempt)); // wait 1s, 2s between retries
+      await new Promise(r => setTimeout(r, 1000 * attempt));
     }
     try {
       const res = await fetch(API_BASE + '/master-data?asset_no=' + encodeURIComponent(val));
-      if (!res.ok) continue; // retry on HTTP error
-      const data = await res.json(); // { asset_type } or null
+      if (!res.ok) continue;
+      const data = await res.json();
       if (data && data.asset_type) {
         currentMachineType = data.asset_type;
         document.getElementById('supMachineType').textContent = 'Type: ' + currentMachineType;
         document.getElementById('supMachineType').style.color = '#3B6D11';
         found = true;
-        break; // success — stop retrying
+        break;
       } else {
-        // Row not found — no point retrying, asset genuinely not in master data
         currentMachineType = 'Unknown';
         document.getElementById('supMachineType').textContent = 'Not found in master data — will save as Unknown';
         document.getElementById('supMachineType').style.color = '#888';
@@ -1030,19 +931,14 @@ async function supSetAsset(val) {
       }
     } catch(e) {
       if (attempt === MAX_ATTEMPTS) {
-        // All attempts failed
         currentMachineType = 'Unknown';
         document.getElementById('supMachineType').textContent = 'Connection issue — will save as Unknown. Check network.';
         document.getElementById('supMachineType').style.color = '#C00000';
       }
-      // Otherwise loop and retry
     }
   }
 
-  // Machine type now known (or Unknown) — refresh the fault list to match.
   populateFaultDropdown(currentMachineType);
-
-  // Lookup complete — now evaluate if form is ready to submit
   checkSupReady();
 }
 
@@ -1053,7 +949,6 @@ function checkSupReady() {
   document.getElementById('supSubmitBtn').disabled = !ready;
 }
 
-// ── DUPLICATE TICKET CHECK ────────────────────────────────────────────────────
 let dupExistingJob = null;
 
 async function checkExistingTicket(assetNo) {
@@ -1062,8 +957,8 @@ async function checkExistingTicket(assetNo) {
     const res = await fetch(
       API_BASE + '/downtime-log?asset_no=' + encodeURIComponent(assetNo) + '&open=1'
     );
-    return await res.json(); // already the single record or null
-  } catch(e) { return null; } // fail open — don't block submission on network error
+    return await res.json();
+  } catch(e) { return null; }
 }
 
 function showDupOverlay(job) {
@@ -1095,18 +990,15 @@ function closeDupOverlay() {
 
 function viewExistingTicket() {
   closeDupOverlay();
-  // Switch to mechanic screen and open the existing job card
   goScreen('screenMechanic');
   setTimeout(async () => {
     await loadMechanicScreen();
     if (dupExistingJob) {
-      // Small delay to let the screen render before opening detail
       setTimeout(() => openJobDetail(dupExistingJob.id), 400);
     }
   }, 200);
 }
 
-// Guards against double-submit / re-entrant calls on the downtime log itself
 let submittingDowntime = false;
 
 async function submitDowntime() {
@@ -1118,12 +1010,6 @@ async function submitDowntime() {
   btn.textContent = 'Checking...';
 
   try {
-    // Check for existing open or investigating ticket for this asset.
-    // NOTE: this is a best-effort check, not a guarantee — two supervisors
-    // scanning the same asset within a second or two of each other can both
-    // pass this check before either insert lands. The real backstop is the
-    // partial unique index on downtime_log (see SQL note below), which the
-    // 409 branch below handles.
     const existing = await checkExistingTicket(currentAssetNo);
     if (existing) {
       showDupOverlay(existing);
@@ -1147,7 +1033,6 @@ async function submitDowntime() {
     });
 
     if (res.ok || res.status === 201) {
-      // Send push notification to all subscribed mechanics, deep-linked to this job
       let newJobId = null;
       try {
         const created = await res.json();
@@ -1157,13 +1042,8 @@ async function submitDowntime() {
       document.getElementById('supSuccessView').style.display = 'block';
       document.getElementById('supSuccessDetail').textContent =
         currentAssetNo + ' (' + currentMachineType + ') — ' + payload.line + ' — ' + payload.fault;
-      // Auto-reset after 3 seconds for next incident
       setTimeout(() => resetSupervisor(), 3000);
     } else if (res.status === 409) {
-      // Database-level unique index caught a race: another submission for
-      // this asset landed between our check and our insert. Treat exactly
-      // like the client-side duplicate check — refresh and show the ticket
-      // that actually won the race, rather than a generic error.
       const raced = await checkExistingTicket(currentAssetNo);
       btn.disabled = false;
       btn.textContent = 'Log Machine Down';
@@ -1187,16 +1067,11 @@ async function submitDowntime() {
 }
 
 function resetSupervisor() {
-  // Stop scanner if running
   if (supScannerActive) stopScannerSup();
 
-  // Reset state — Fusing/Bandknife keep their machine type fixed to the
-  // category (no lookup needed to know it), Bullmer clears it since the
-  // next asset scanned could be either a Spreader or a Cutter.
   currentAssetNo = '';
   currentMachineType = supervisorCategory === 'BULLMER' ? '' : supervisorCategory;
 
-  // Reset form fields
   document.getElementById('supAssetInput').value = '';
   document.getElementById('supAssetConfirmed').style.display = 'none';
   document.getElementById('supMachineType').textContent = '';
@@ -1205,21 +1080,17 @@ function resetSupervisor() {
   populateFaultDropdown(supervisorCategory === 'BULLMER' ? null : supervisorCategory);
   document.getElementById('supFault').value = '';
 
-  // Show form, hide success
   document.getElementById('supFormView').style.display = 'block';
   document.getElementById('supSuccessView').style.display = 'none';
 
-  // Reset submit button
   const btn = document.getElementById('supSubmitBtn');
   btn.disabled = true;
   btn.textContent = 'Log Machine Down';
 
-  // Scroll to top of form
   document.getElementById('screenSupervisor').scrollTop = 0;
   window.scrollTo(0, 0);
 }
 
-// ── PM SCREEN ──────────────────────────────────────────────────────
 let pmAssetNo = '';
 let pmMachineType = '';
 let pmScanner = null;
@@ -1385,9 +1256,7 @@ function resetPM() {
   window.scrollTo(0, 0);
 }
 
-// ── MECHANIC SCREEN ───────────────────────────────────────────────
 async function loadMechanicScreen() {
-  // Restore saved mechanic name
   setTimeout(loadMechName, 100);
   showScreen('screenMechanic');
   document.getElementById('mechListView').style.display = 'block';
@@ -1398,8 +1267,6 @@ async function loadMechanicScreen() {
 async function fetchJobs() {
   try {
     const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00';
-    // Only fetch what the mechanic screen actually needs: jobs still
-    // open/investigating (regardless of date) plus jobs resolved today.
     const res = await fetch(
       API_BASE + '/downtime-log?mode=mechanic&resolvedAfter=' + encodeURIComponent(todayStart)
     );
@@ -1421,21 +1288,18 @@ function renderMechanicView() {
   document.getElementById('sumInvestigating').textContent = investigating.length;
   document.getElementById('sumDone').textContent = done.length;
 
-  // Open jobs list
   if (openAndInv.length === 0) {
     document.getElementById('openJobsList').innerHTML = '<div class="empty">No open job cards — all clear!</div>';
   } else {
     document.getElementById('openJobsList').innerHTML = openAndInv.map(j => jobCardHTML(j)).join('');
   }
 
-  // Completed jobs
   if (done.length === 0) {
     document.getElementById('doneJobsList').innerHTML = '<div class="empty">No completed jobs today yet.</div>';
   } else {
     document.getElementById('doneJobsList').innerHTML = done.map(j => jobCardHTML(j)).join('');
   }
 
-  // Downtime table
   renderDowntimeTable(done);
 }
 
@@ -1491,7 +1355,6 @@ function formatMins(mins) {
 }
 
 function formatWallClock(ms) {
-  // Format raw elapsed milliseconds as wall-clock duration
   const totalMins = Math.floor(ms / 60000);
   const h = Math.floor(totalMins / 60);
   const m = totalMins % 60;
@@ -1499,13 +1362,6 @@ function formatWallClock(ms) {
   return h > 0 ? h + 'h ' + m + 'min' : m + 'min';
 }
 
-// ── SHIFT-AWARE TIME CALCULATION ─────────────────────────────────────────────
-// getShiftForDate / nextShiftStart / shiftAwareMinutes / shiftAwareElapsed
-// now live in config.js, keyed by location (PMT vs PCN each have their own
-// hours, and PCN finishes early on Fridays). Every call site below passes
-// the job's location (j.line / currentJobData.line) through explicitly.
-
-// ── LIVE TIMER ────────────────────────────────────────────────────────────────
 let liveTimerInterval = null;
 let liveTimerStart    = null;
 let liveTimerLocation = null;
@@ -1522,7 +1378,7 @@ function startLiveTimer(reportedISO, location) {
     const shiftMins = shiftAwareElapsed(liveTimerStart, liveTimerLocation);
     wallEl.textContent  = formatWallClock(wallMs);
     shiftEl.textContent = formatMins(shiftMins);
-  }, 30000); // update every 30 seconds
+  }, 30000);
 }
 
 function stopLiveTimer() {
@@ -1541,11 +1397,7 @@ function switchMechTab(tab) {
   document.getElementById('section' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
 }
 
-// ── MACHINE TYPE CONFIRMATION (for Unknown types) ─────────────────
-// MACHINE_TYPES comes from config.js (shared across downtime.html,
-// scan.html, and the Asset Register app) — see <script src="config.js">.
-
-let mtSelectedCode = ''; // tracks a confirmed pick from the dropdown (vs free-typed text)
+let mtSelectedCode = '';
 
 function mtFilterTypeList(q) {
   const dropdown = document.getElementById('mtTypeDropdown');
@@ -1558,7 +1410,6 @@ function mtFilterTypeList(q) {
   mtRenderTypeDropdown(filtered);
   dropdown.style.display = filtered.length > 0 ? 'block' : 'none';
 
-  // Any manual typing invalidates a previous selection until re-picked from the list
   if (q !== mtSelectedCode) {
     mtSelectedCode = '';
     document.getElementById('confirmMachineTypeBtn').disabled = true;
@@ -1614,7 +1465,6 @@ async function confirmMachineType() {
   btn.textContent = 'Confirming...';
 
   try {
-    // 1. Update this job card's machine_type
     const jobRes = await fetch(API_BASE + '/downtime-log/' + currentJobId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1622,9 +1472,6 @@ async function confirmMachineType() {
     });
     if (!jobRes.ok) throw new Error('job update failed');
 
-    // 2. Upsert master_data so future scans of this asset resolve automatically.
-    // The Function does the "exists? patch : insert" check server-side now —
-    // one call instead of the old two-step read-then-write dance.
     const assetNo = currentJobData.asset_no;
     try {
       await fetch(API_BASE + '/master-data', {
@@ -1633,11 +1480,9 @@ async function confirmMachineType() {
         body: JSON.stringify({ asset_no: assetNo, asset_type: type })
       });
     } catch(e) {
-      // master_data update failing shouldn't block the job card fix — log and continue
       console.warn('master_data upsert failed:', e);
     }
 
-    // Update local state and reveal investigate section
     currentJobData.machine_type = type;
     const cached = allJobs.find(j => j.id === currentJobId);
     if (cached) cached.machine_type = type;
@@ -1646,7 +1491,6 @@ async function confirmMachineType() {
     populateMechanicSelect('investigateMechName', type);
     document.getElementById('investigateSection').style.display = 'block';
 
-    // Refresh header to show the confirmed type
     document.querySelector('#detailHeader .detail-type').textContent = type;
 
     showToast('Machine type confirmed — master data updated.', 'success');
@@ -1657,7 +1501,6 @@ async function confirmMachineType() {
   }
 }
 
-// ── JOB DETAIL ────────────────────────────────────────────────────
 function openJobDetail(id) {
   currentJobId = id;
   currentJobData = allJobs.find(j => j.id === id);
@@ -1667,7 +1510,6 @@ function openJobDetail(id) {
   document.getElementById('mechListView').style.display = 'none';
   document.getElementById('mechDetailView').style.display = 'block';
 
-  // Header
   document.getElementById('detailHeader').innerHTML = `
     <div class="detail-asset">${j.asset_no}</div>
     <div class="detail-type">${j.machine_type || ''}</div>
@@ -1677,13 +1519,11 @@ function openJobDetail(id) {
     ${j.mechanic && j.status === 'Investigating' ? `<div class="detail-time" style="color:#2E5597;font-weight:600;opacity:1;">🔧 Being investigated by ${j.mechanic}</div>` : ''}
     ${j.mechanic && j.status === 'Resolved'      ? `<div class="detail-time" style="color:#3B6D11;font-weight:600;opacity:1;">✓ Resolved by ${j.mechanic}</div>` : ''}`;
 
-  // Time pills
   let timesHTML = `<div class="time-pill"><div class="time-pill-label">Reported</div><div class="time-pill-value">${j.reported_time ? new Date(j.reported_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'}) : '—'}</div></div>`;
   if (j.investigate_time) timesHTML += `<div class="time-pill"><div class="time-pill-label">Investigated</div><div class="time-pill-value">${new Date(j.investigate_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'})}</div></div>`;
   if (j.resolved_time) timesHTML += `<div class="time-pill"><div class="time-pill-label">Resolved</div><div class="time-pill-value">${new Date(j.resolved_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'})}</div></div>`;
   if (j.total_downtime_minutes) timesHTML += `<div class="time-pill" style="background:#FCE4D6;"><div class="time-pill-label">Production lost</div><div class="time-pill-value" style="color:#843C0C;">${formatMins(j.total_downtime_minutes)}</div></div>`;
 
-  // For open/investigating incidents — show live wall clock AND shift-adjusted time
   if (j.status !== 'Resolved' && j.reported_time) {
     const wallMs       = Date.now() - new Date(j.reported_time).getTime();
     const shiftMins    = shiftAwareElapsed(j.reported_time, j.line);
@@ -1696,13 +1536,11 @@ function openJobDetail(id) {
         <div class="time-pill-label" style="color:#843C0C;">📉 Production lost</div>
         <div class="time-pill-value" style="color:#843C0C;" id="shiftTimePill">${formatMins(shiftMins)}</div>
       </div>`;
-    // Start live timer
     startLiveTimer(j.reported_time, j.line);
   }
 
   document.getElementById('detailTimes').innerHTML = timesHTML;
 
-  // Show correct action section
   document.getElementById('machineTypeConfirmSection').style.display = 'none';
   document.getElementById('investigateSection').style.display = 'none';
   document.getElementById('resolveSection').style.display = 'none';
@@ -1731,7 +1569,6 @@ function openJobDetail(id) {
     loadCompletedParts(j.id);
   }
 
-  // Reset pending parts for new session
   pendingRequests = [];
 }
 
@@ -1746,7 +1583,6 @@ async function markInvestigate() {
   const mechSel = document.getElementById('investigateMechName');
   const mechName = mechSel ? mechSel.value : '';
   if (!mechName) { showToast('Please select your name before taking this job.', 'error'); return; }
-  // Guard: machine type must be confirmed before investigating
   if (!currentJobData.machine_type || currentJobData.machine_type === 'Unknown') {
     showToast('Please confirm the machine type first.', 'error');
     showMachineTypeConfirm();
@@ -1755,7 +1591,6 @@ async function markInvestigate() {
   const btn = document.getElementById('investigateBtn');
   btn.disabled = true; btn.textContent = 'Updating...';
   const now = new Date().toISOString();
-  // Shift-aware response time — only counts production minutes from reported to now
   const responseMins = shiftAwareMinutes(currentJobData.reported_time, now, currentJobData.line);
   try {
     const res = await fetch(API_BASE + '/downtime-log/' + currentJobId, {
@@ -1790,13 +1625,10 @@ async function markResolved() {
   const reported    = currentJobData.reported_time    ? new Date(currentJobData.reported_time)    : new Date();
   const investigate = currentJobData.investigate_time ? new Date(currentJobData.investigate_time) : new Date();
 
-  // Shift-aware total downtime — only counts production minutes lost
   const totalMins  = shiftAwareMinutes(currentJobData.reported_time, now, currentJobData.line);
-  // Repair time — shift-aware from investigation to resolution
   const repairMins = currentJobData.investigate_time
     ? shiftAwareMinutes(currentJobData.investigate_time, now, currentJobData.line)
     : totalMins;
-  // Response time — shift-aware from reported to investigation
   const responseMins = currentJobData.investigate_time
     ? shiftAwareMinutes(currentJobData.reported_time, currentJobData.investigate_time, currentJobData.line)
     : 0;
@@ -1828,7 +1660,6 @@ async function markResolved() {
   } catch(e) { showToast('Connection error.', 'error'); btn.disabled = false; btn.textContent = 'Mark as Resolved'; }
 }
 
-// ── PARTS (embedded mechanic flow) ─────────────────────────────────
 let pendingRequests = [];
 let addingPartRequest = false;
 let submittingParts = false;
@@ -1861,9 +1692,6 @@ function showResolveSection() {
   document.getElementById('resolveSection').style.display = 'block';
 }
 
-// Guarded against double-fire (fast double-tap, or Enter-key + button click
-// racing each other) and merges same-description entries instead of pushing
-// a duplicate line into the request.
 function addPartRequest() {
   if (addingPartRequest) return;
   addingPartRequest = true;
@@ -1925,8 +1753,6 @@ function renderExistingRequests() {
   document.getElementById('donePartsBtn').disabled = false;
 }
 
-// Throws on failure instead of swallowing it — callers must find out if the
-// request didn't make it to the workshop, rather than silently proceeding.
 async function submitPartRequests(jobId, assetNo, machineType, line, mechName, batchId) {
   if (pendingRequests.length === 0) return;
   const payloads = pendingRequests.map(r => ({
@@ -1967,8 +1793,6 @@ async function submitAndProceed() {
   btn.disabled = true;
   btn.textContent = 'Submitting request...';
 
-  // One ID per attempt for this job's parts request — supports future
-  // retry-safe behaviour once a unique constraint exists on parts_requests.
   const batchId = generatePartsBatchId();
 
   try {
@@ -1984,15 +1808,12 @@ async function submitAndProceed() {
       pendingRequests = [];
     }
 
-    // Pre-fill mechanic name on the resolve screen
     const resolveSelect = document.getElementById('mechName');
     if (resolveSelect) resolveSelect.value = mechName;
 
     showToast('Part request sent to workshop!', 'success');
     showResolveSection();
   } catch (e) {
-    // Surface the failure instead of silently letting the mechanic proceed
-    // to resolve the job while the parts request never reached the workshop.
     showToast('Could not send parts request — check connection and try again.', 'error');
     btn.disabled = false;
     btn.textContent = 'Submit Request & Proceed to Resolve';
@@ -2099,7 +1920,6 @@ async function submitReturn(requestId, partDesc, maxQty, partNo) {
   } catch(e) { showToast('Return failed. Try again.', 'error'); }
 }
 
-// ── UTILS ─────────────────────────────────────────────────────────
 function showToast(msg, type) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -2107,7 +1927,6 @@ function showToast(msg, type) {
   setTimeout(() => t.classList.remove('show'), 3500);
 }
 
-// ── MECHANIC NAME PERSISTENCE ────────────────────────────────────
 function saveMechName() {
   const sel = document.getElementById('mechName') || document.getElementById('partsRequestMechanic');
   if (!sel) return;
@@ -2130,29 +1949,12 @@ function loadMechName() {
   } catch(e) {}
 }
 
-// ── PUSH NOTIFICATIONS (OneSignal) ────────────────────────────────
-function checkNotificationPrompt() {
-  // Show prompt if permission not yet decided
-  try {
-    if (Notification.permission === 'default') {
-      const dismissed = localStorage.getItem('pmt_notif_dismissed');
-      if (!dismissed) {
-        document.getElementById('notifPrompt').style.display = 'block';
-      }
-    }
-  } catch(e) {}
-}
-
 function enableNotifications() {
   OneSignalDeferred.push(async function(OneSignal) {
     try {
       await OneSignal.Notifications.requestPermission();
       if (Notification.permission === 'granted') {
-        // Requesting permission alone isn't enough on OneSignal's v16 SDK —
-        // the device also needs to be explicitly opted in, or it stays
-        // "permission granted" but not actually a subscribed recipient.
         await OneSignal.User.PushSubscription.optIn();
-        document.getElementById('notifPrompt').style.display = 'none';
         showToast('Notifications enabled!', 'success');
       } else {
         showToast('Notifications not enabled — check browser settings.', 'error');
@@ -2163,23 +1965,14 @@ function enableNotifications() {
   });
 }
 
-function dismissNotifPrompt() {
-  document.getElementById('notifPrompt').style.display = 'none';
-  try { localStorage.setItem('pmt_notif_dismissed', '1'); } catch(e) {}
-}
-
 async function sendIncidentNotification(assetNo, machineType, line, fault, jobId) {
   try {
     const title   = '🔴 Machine Down — ' + line;
     const message = 'Asset: ' + assetNo + (machineType ? ' (' + machineType + ')' : '') + ' | ' + fault;
-    // Deep-link straight to this job's detail view when we have an id;
-    // fall back to the generic app URL if the insert didn't return one.
     const deepLinkUrl = jobId
       ? 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/?job=' + jobId
       : 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/';
 
-    // Calls our own Worker route, which proxies to OneSignal server-side —
-    // the REST API key never touches the browser.
     const res = await fetch(API_BASE + '/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2196,16 +1989,8 @@ async function sendIncidentNotification(assetNo, machineType, line, fault, jobId
   }
 }
 
-// ── INITIALISATION ────────────────────────────────────────────────
 populateConfigDrivenSelects();
 
-// Show notification prompt on load
-window.addEventListener('load', () => {
-  setTimeout(checkNotificationPrompt, 1500);
-});
-
-// Deep-link: if opened from a "Machine Down" push notification (?job=<id>),
-// skip the role selector and land straight on that job's detail view.
 window.addEventListener('load', async () => {
   const params = new URLSearchParams(window.location.search);
   const jobParam = params.get('job');
@@ -2213,7 +1998,7 @@ window.addEventListener('load', async () => {
   const jobId = parseInt(jobParam, 10);
   if (!jobId) return;
 
-  await loadMechanicScreen(); // shows mechanic screen + runs fetchJobs()
+  await loadMechanicScreen();
   if (allJobs.some(j => j.id === jobId)) {
     openJobDetail(jobId);
   } else {
