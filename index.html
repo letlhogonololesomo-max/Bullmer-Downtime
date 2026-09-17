@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="PMT Downtime">
+<meta name="apple-mobile-web-app-title" content="C/ROOM">
 <meta name="theme-color" content="#1F3864">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>C/ROOM Downtime Tracker</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
@@ -68,8 +70,8 @@ function getResolveCodesForType(machineType) {
 const MECHANICS_BY_TYPE = {
   'AUTO-CUTTER':   ['Dean', 'Jody'],
   'AUTO-SPREADER': ['Dean', 'Jody'],
-  'FUSING':        ['Byron','Dean'],
-  'BANDKNIFE':     ['Jody','Byron']
+  'FUSING':        ['Byron'],
+  'BANDKNIFE':     ['Jody']
 };
 
 function getMechanicsForType(machineType) {
