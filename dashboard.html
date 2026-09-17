@@ -124,7 +124,7 @@ tr:hover td { background: #fafafa; }
 <div class="main">
   <div class="tabs">
     <div class="tab active" onclick="switchTab('downtime')">Downtime</div>
-    <div class="tab" onclick="switchTab('pm')" style="display:none;">Preventative Maintenance</div>
+    <div class="tab" onclick="switchTab('pm')">Preventative Maintenance</div>
     <div class="tab" onclick="switchTab('profile')">Asset Profile</div>
     <div class="tab" onclick="switchTab('inventory')">Inventory</div>
   </div>
@@ -162,12 +162,23 @@ tr:hover td { background: #fafafa; }
     <div class="card">
       <div class="card-title">Fault types heatmap</div>
       <div class="chart-sub" style="font-size:11px;color:#888;margin-bottom:10px;">Incident count by fault and site — reacts to the date/location filters above</div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+        <button id="hmTabCutter" onclick="setHeatmapType('AUTO-CUTTER')" class="section-btn active" style="--sc:#6B3FA0;">Cutter</button>
+        <button id="hmTabSpreader" onclick="setHeatmapType('AUTO-SPREADER')" class="section-btn" style="--sc:#1B7D8A;">Spreader</button>
+        <button id="hmTabBandknife" onclick="setHeatmapType('BANDKNIFE')" class="section-btn" style="--sc:#C9184A;">Bandknife</button>
+        <button id="hmTabFusing" onclick="setHeatmapType('FUSING')" class="section-btn" style="--sc:#C9A84C;">Fusing</button>
+      </div>
       <div style="overflow-x:auto;" id="faultHeatmap"></div>
     </div>
 
     <div class="card">
-      <div class="card-title">Incidents</div>
-      <div style="overflow-x:auto;" id="dtTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      <div class="collapse-header" onclick="toggleIncidentsLog()">
+        <div class="card-title" style="margin-bottom:0;">Incidents <span id="dtIncidentsCount" style="font-weight:400;color:#888;"></span></div>
+        <span class="collapse-toggle" id="dtIncidentsToggleLabel">Expand ▼</span>
+      </div>
+      <div id="dtIncidentsBody" style="display:none;margin-top:12px;">
+        <div style="overflow-x:auto;" id="dtTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
     </div>
   </div>
 
@@ -196,8 +207,6 @@ tr:hover td { background: #fafafa; }
       <div style="display:flex;gap:14px;margin-bottom:10px;font-size:11px;color:#555;">
         <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#1B7D8A;display:inline-block;"></span>Auto-Spreader</span>
         <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#6B3FA0;display:inline-block;"></span>Auto-Cutter</span>
-        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#C9A84C;display:inline-block;"></span>Fusing</span>
-        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#C9184A;display:inline-block;"></span>Bandknife</span>
       </div>
       <div class="chart-wrap" style="height:260px;"><canvas id="pmMissedChart"></canvas></div>
     </div>
@@ -532,7 +541,10 @@ function renderDowntime(rows) {
 
   renderDowntimePerSite(rows);
   renderDowntimeTrend(rows);
+  lastDowntimeRows = rows;
   renderFaultHeatmap(rows);
+
+  document.getElementById('dtIncidentsCount').textContent = '(' + rows.length + ')';
 
   const el = document.getElementById('dtTable');
   if (rows.length === 0) { el.innerHTML = '<div class="empty">No incidents in this range.</div>'; return; }
@@ -611,8 +623,20 @@ function faultHeatCellClass(count, max) {
   return 'hm-vhigh';
 }
 
-function renderFaultHeatmap(rows) {
-  const knownFaults = [...new Set(Object.values(FAULTS_BY_TYPE).flat())];
+let lastDowntimeRows = [];
+let activeHeatmapType = 'AUTO-CUTTER';
+
+function setHeatmapType(type) {
+  activeHeatmapType = type;
+  ['hmTabCutter','hmTabSpreader','hmTabBandknife','hmTabFusing'].forEach(id => document.getElementById(id).classList.remove('active'));
+  const btnId = type === 'AUTO-CUTTER' ? 'hmTabCutter' : type === 'AUTO-SPREADER' ? 'hmTabSpreader' : type === 'BANDKNIFE' ? 'hmTabBandknife' : 'hmTabFusing';
+  document.getElementById(btnId).classList.add('active');
+  renderFaultHeatmap(lastDowntimeRows);
+}
+
+function renderFaultHeatmap(allRows) {
+  const rows = allRows.filter(r => r.machine_type === activeHeatmapType);
+  const knownFaults = FAULTS_BY_TYPE[activeHeatmapType] || [];
   const customFaults = [...new Set(rows.map(r => r.fault).filter(f => f && !knownFaults.includes(f)))];
   const faultRows = [...knownFaults, ...customFaults];
 
@@ -628,7 +652,7 @@ function renderFaultHeatmap(rows) {
   });
 
   const el = document.getElementById('faultHeatmap');
-  if (rows.length === 0) { el.innerHTML = '<div class="empty">No data for the selected filters.</div>'; return; }
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">No incidents for this machine type in the selected filters.</div>'; return; }
 
   let html = '<table class="hm-table"><thead><tr><th class="row-hdr">Fault</th>' +
     LOCATIONS.map(l => `<th>${l}</th>`).join('') + '<th>Total</th></tr></thead><tbody>';
@@ -682,9 +706,6 @@ function togglePmDetail() {
   label.textContent = isOpen ? 'Expand ▼' : 'Collapse ▲';
 }
 
-// A working day is any weekday — both PMT and PCN run Mon-Fri (PCN just
-// finishes early on Fridays, which doesn't affect whether a daily check
-// was expected that day).
 // ── SA public holidays + year-end shutdown ──────────────────────────
 // Computed via the standard Easter algorithm + the Public Holidays Act's
 // Sunday-rule (falls on Sunday -> following Monday also becomes a holiday).
@@ -732,16 +753,32 @@ function countWorkingDays(fromStr, toStr) {
   return count;
 }
 
+// Scopes the whole PM tab to Bullmer machines only (Cutter/Spreader),
+// excluding Fusing/Bandknife for now — even though those can technically
+// get PM-logged via the app's generic PM screen, this tab's data/charts
+// stay Bullmer-only as they were before Fusing/Bandknife were added.
+const BULLMER_TYPES = ['AUTO-CUTTER', 'AUTO-SPREADER'];
+let pmAssetTypeMap = {}; // asset_no -> asset_type, from master_data — authoritative source for the Bullmer-only filter
+
 async function loadPM() {
   const from = document.getElementById('pmFrom').value;
   const to = document.getElementById('pmTo').value;
+
+  // Fetch the full asset registry once per load so every dataset below can
+  // be reliably scoped to Bullmer, regardless of what machine_type string
+  // happens to be on any individual row.
+  const masterRes = await fetch(API_BASE + '/master-data');
+  const masterRows = await masterRes.json();
+  pmAssetTypeMap = {};
+  masterRows.forEach(a => { pmAssetTypeMap[a.asset_no] = a.asset_type; });
 
   let url = API_BASE + '/pm-log';
   if (from || to) {
     url += '?' + [from ? 'from=' + from : '', to ? 'to=' + to : ''].filter(Boolean).join('&');
   }
   const res = await fetch(url);
-  const allRows = await res.json();
+  let allRows = await res.json();
+  allRows = allRows.filter(r => BULLMER_TYPES.includes(pmAssetTypeMap[r.asset_no] || r.machine_type));
 
   // asset_no -> { location, machine_type } — used for the spreader/cutter
   // color coding and for scoping the "needing repair"/"recurring" panels
@@ -751,6 +788,7 @@ async function loadPM() {
 
   const partsRes = await fetch(API_BASE + '/parts-requests');
   let allParts = await partsRes.json();
+  allParts = allParts.filter(p => BULLMER_TYPES.includes(pmAssetTypeMap[p.asset_no] || p.machine_type));
   if (from) allParts = allParts.filter(p => (p.requested_time || '').split('T')[0] >= from);
   if (to)   allParts = allParts.filter(p => (p.requested_time || '').split('T')[0] <= to);
 
@@ -941,7 +979,8 @@ function renderPmMostParts(parts) {
 
 async function loadPmNeedingRepair() {
   const res = await fetch(API_BASE + '/downtime-log?mode=dashboard');
-  const allIncidents = await res.json();
+  let allIncidents = await res.json();
+  allIncidents = allIncidents.filter(r => BULLMER_TYPES.includes(pmAssetTypeMap[r.asset_no] || r.machine_type));
   let open = allIncidents.filter(r => r.status !== 'Resolved');
   if (activePmLocation) open = open.filter(r => r.line === activePmLocation);
   open.sort((a, b) => (a.reported_time || '').localeCompare(b.reported_time || ''));
@@ -970,6 +1009,7 @@ async function loadPmNeedingRepair() {
 async function loadPmRecurring() {
   const res = await fetch(API_BASE + '/parts-requests?mode=repeats');
   let repeats = await res.json();
+  repeats = repeats.filter(r => BULLMER_TYPES.includes(pmAssetTypeMap[r.asset_no]));
   if (activePmLocation) {
     repeats = repeats.filter(r => (pmAssetInfo[r.asset_no] || {}).location === activePmLocation);
   }
@@ -1513,6 +1553,14 @@ initDashboard();
 function toggleCatalogue() {
   const body = document.getElementById('catalogueBody');
   const label = document.getElementById('catalogueToggleLabel');
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  label.textContent = isOpen ? 'Expand ▼' : 'Collapse ▲';
+}
+
+function toggleIncidentsLog() {
+  const body = document.getElementById('dtIncidentsBody');
+  const label = document.getElementById('dtIncidentsToggleLabel');
   const isOpen = body.style.display !== 'none';
   body.style.display = isOpen ? 'none' : 'block';
   label.textContent = isOpen ? 'Expand ▼' : 'Collapse ▲';
