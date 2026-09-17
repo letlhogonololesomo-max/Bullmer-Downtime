@@ -1,12 +1,2083 @@
-name = "bullmer"
-compatibility_date = "2024-09-01"
-main = "worker.js"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="C/ROOM">
+<meta name="theme-color" content="#1F3864">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>C/ROOM Downtime Tracker</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const MACHINE_TYPES = [
+  { code: 'AUTO-CUTTER',   desc: 'Automatic fabric cutter' },
+  { code: 'AUTO-SPREADER', desc: 'Automatic fabric spreader' },
+  { code: 'FUSING',        desc: 'Fusing machine' },
+  { code: 'BANDKNIFE',     desc: 'Bandknife cutting machine' }
+];
 
-[assets]
-directory = "."
-binding = "ASSETS"
+const FAULTS_BY_TYPE = {
+  'AUTO-CUTTER': [
+    'Machine not cutting',
+    'Vacuum insufficient',
+    'Machine not feeding',
+    'Sensor error',
+    'Machine locked',
+    'Other'
+  ],
+  'AUTO-SPREADER': [
+    'Machine not feeding',
+    'Sensor error',
+    'Machine not cutting',
+    'Machine not moving',
+    'Emergency stop not working',
+    'Other'
+  ],
+  'FUSING': [
+    'Belt not moving',
+    'Unusual noise',
+    'Not reaching temperature',
+    'Belt is damaged',
+    'Machine not switching on',
+    'Other'
+  ],
+  'BANDKNIFE': [
+    'Machine not switching on',
+    'Unusual noise',
+    'Need new blade',
+    'Motor belt broke',
+    'Other'
+  ]
+};
 
-[[d1_databases]]
-binding = "DB"
-database_name = "bullmer"
-database_id = "985b05ab-3349-4c96-a6d0-11ab7e04abac"
+const RESOLVE_CODES_BY_TYPE = {
+  'AUTO-CUTTER':   ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
+  'AUTO-SPREADER': ['Replaced part', 'Cleaned', 'Lubricated', 'Reset software', 'Other'],
+  'FUSING':        ['Electrical fault', 'Mechanical wear', 'Replaced part', 'Cleaned the machine', 'Lubricated the machine', 'Other'],
+  'BANDKNIFE':     ['Electrical fault', 'Mechanical wear', 'Replaced part', 'Cleaned the machine', 'Lubricated the machine', 'Other']
+};
+
+function getResolveCodesForType(machineType) {
+  if (machineType && RESOLVE_CODES_BY_TYPE[machineType]) return RESOLVE_CODES_BY_TYPE[machineType];
+  const all = new Set();
+  Object.values(RESOLVE_CODES_BY_TYPE).forEach(list => list.forEach(c => all.add(c)));
+  return [...all];
+}
+
+const MECHANICS_BY_TYPE = {
+  'AUTO-CUTTER':   ['Dean', 'Jody'],
+  'AUTO-SPREADER': ['Dean', 'Jody'],
+  'FUSING':        ['Byron'],
+  'BANDKNIFE':     ['Jody']
+};
+
+function getMechanicsForType(machineType) {
+  if (machineType && MECHANICS_BY_TYPE[machineType]) return MECHANICS_BY_TYPE[machineType];
+  const all = new Set();
+  Object.values(MECHANICS_BY_TYPE).forEach(list => list.forEach(m => all.add(m)));
+  return [...all];
+}
+
+const LOCATIONS = [
+  'PMT',
+  'PCN'
+];
+
+function getFaultListForType(machineType) {
+  if (machineType && FAULTS_BY_TYPE[machineType]) return FAULTS_BY_TYPE[machineType];
+  const all = new Set();
+  Object.values(FAULTS_BY_TYPE).forEach(list => list.forEach(f => all.add(f)));
+  return [...all];
+}
+
+const SHIFT_SCHEDULE = {
+  'PMT': {
+    weekday: { start: [7, 45], end: [16, 45] },
+    friday:  { start: [7, 45], end: [16, 45] }
+  },
+  'PCN': {
+    weekday: { start: [7, 30], end: [16, 30] },
+    friday:  { start: [7, 30], end: [15, 15] }
+  }
+};
+const DEFAULT_SHIFT_LOCATION = 'PMT';
+
+function getShiftForDate(date, location) {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return null;
+  const sched = SHIFT_SCHEDULE[location] || SHIFT_SCHEDULE[DEFAULT_SHIFT_LOCATION];
+  const times = (day === 5) ? sched.friday : sched.weekday;
+  const start = new Date(date); start.setHours(times.start[0], times.start[1], 0, 0);
+  const end   = new Date(date); end.setHours(times.end[0], times.end[1], 0, 0);
+  return { start, end };
+}
+
+function nextShiftStart(fromDate, location) {
+  const d = new Date(fromDate);
+  d.setDate(d.getDate() + 1);
+  for (let i = 0; i < 7; i++) {
+    const shift = getShiftForDate(d, location);
+    if (shift) return shift.start;
+    d.setDate(d.getDate() + 1);
+  }
+  return null;
+}
+
+function shiftAwareMinutes(startISO, endISO, location) {
+  if (!startISO || !endISO) return 0;
+  let current = new Date(startISO);
+  const end   = new Date(endISO);
+  if (current >= end) return 0;
+
+  let totalMins = 0;
+  let safetyLimit = 0;
+
+  while (current < end && safetyLimit < 50) {
+    safetyLimit++;
+    const shift = getShiftForDate(current, location);
+
+    if (!shift) {
+      const next = nextShiftStart(current, location);
+      if (!next) break;
+      current = next;
+      continue;
+    }
+
+    if (current < shift.start) current = new Date(shift.start);
+
+    if (current >= shift.end) {
+      const next = nextShiftStart(current, location);
+      if (!next) break;
+      current = next;
+      continue;
+    }
+
+    const segEnd = end < shift.end ? end : shift.end;
+    totalMins += Math.round((segEnd - current) / 60000);
+    current = new Date(segEnd);
+
+    if (current < shift.end) break;
+    const next = nextShiftStart(current, location);
+    if (!next) break;
+    current = next;
+  }
+
+  return totalMins;
+}
+
+function shiftAwareElapsed(startISO, location) {
+  return shiftAwareMinutes(startISO, new Date().toISOString(), location);
+}
+
+function getShiftMinutesForDate(dateStr, location) {
+  if (!dateStr) return null;
+  const shift = getShiftForDate(new Date(dateStr), location);
+  if (!shift) return null;
+  return Math.round((shift.end - shift.start) / 60000);
+}
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; color: #1a1a1a; }
+
+.header { background: #1F3864; color: white; padding: 16px; text-align: center; position: relative; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header p { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+
+.refresh-btn-header {
+  position: absolute; top: 50%; right: 16px; transform: translateY(-50%);
+  background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 8px; width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: white; transition: background 0.2s;
+}
+.refresh-btn-header:active { background: rgba(255,255,255,0.3); }
+.refresh-btn-header.spinning svg { animation: spin 0.8s linear infinite; }
+
+.home-btn-header {
+  position: absolute; top: 50%; left: 16px; transform: translateY(-50%);
+  background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 8px; width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: white; transition: background 0.2s;
+}
+.home-btn-header:active { background: rgba(255,255,255,0.3); }
+
+.app { max-width: 480px; margin: 0 auto; padding: 16px; }
+
+.role-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px; }
+.role-btn { background: white; border: 2px solid #ddd; border-radius: 14px; padding: 24px 16px; text-align: center; cursor: pointer; transition: all 0.2s; }
+.role-btn:active { transform: scale(0.97); }
+.role-btn.supervisor:hover, .role-btn.supervisor.active { border-color: #1F3864; background: #EBF3FB; }
+.role-btn.mechanic:hover, .role-btn.mechanic.active { border-color: #70AD47; background: #E2EFDA; }
+.role-btn.pm:hover, .role-btn.pm.active { border-color: #6B3FA0; background: #EBE3F5; }
+.role-btn.fusing:hover, .role-btn.fusing.active { border-color: #C9A84C; background: #FFF8E7; }
+.role-btn.bandknife:hover, .role-btn.bandknife.active { border-color: #C9184A; background: #FDE8ED; }
+.role-icon { font-size: 32px; margin-bottom: 10px; }
+.role-title { font-size: 14px; font-weight: 700; color: #1a1a1a; }
+.role-sub { font-size: 11px; color: #888; margin-top: 3px; }
+
+.screen { display: none; }
+.screen.active { display: block; }
+
+.card { background: white; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.07); }
+.card-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 12px; }
+
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12px; font-weight: 700; color: #555; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+select, textarea { width: 100%; padding: 13px 14px; border: 1.5px solid #ddd; border-radius: 10px; font-size: 15px; color: #1a1a1a; background: white; transition: border-color 0.2s; font-family: inherit; }
+select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%23999' d='M7 9L2 4h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; cursor: pointer; }
+select:focus, textarea:focus { outline: none; border-color: #2E5597; }
+textarea { min-height: 90px; resize: vertical; }
+select:disabled { background-color: #f5f5f5; color: #aaa; cursor: not-allowed; }
+
+.asset-confirmed { display: none; align-items: center; gap: 10px; margin-top: 10px; padding: 12px 14px; background: #E2EFDA; border-radius: 10px; border: 1px solid #70AD47; }
+.asset-confirmed .num { font-size: 18px; font-weight: 700; color: #3B6D11; flex: 1; }
+.asset-confirmed .type { font-size: 11px; color: #3B6D11; font-weight: 600; }
+.asset-check { width: 24px; height: 24px; background: #70AD47; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.asset-check svg { width: 13px; height: 13px; stroke: white; fill: none; stroke-width: 2.5; }
+
+.manual-input { width: 100%; padding: 13px 14px; border: 1.5px solid #ddd; border-radius: 10px; font-size: 15px; color: #1a1a1a; margin-top: 8px; }
+.manual-input:focus { outline: none; border-color: #2E5597; }
+.or-divider { text-align: center; font-size: 11px; color: #bbb; margin: 8px 0; }
+
+.scan-btn { width: 100%; padding: 15px; border: 2px dashed #2E5597; border-radius: 12px; background: #EBF3FB; color: #2E5597; font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.scan-btn.scanning { border-color: #ED7D31; background: #FFF2CC; color: #ED7D31; }
+#readerSup { border-radius: 8px; overflow: hidden; margin-top: 10px; display: none; }
+
+.submit-btn { width: 100%; padding: 17px; border: none; border-radius: 14px; color: white; font-size: 17px; font-weight: 700; cursor: pointer; transition: all 0.2s; margin-top: 4px; }
+.submit-btn.navy { background: #1F3864; }
+.submit-btn.navy:hover { background: #162B4D; }
+.submit-btn.green { background: #70AD47; }
+.submit-btn.green:hover { background: #5A9438; }
+.submit-btn.orange { background: #ED7D31; }
+.submit-btn.orange:hover { background: #D4691E; }
+.submit-btn:disabled { background: #ccc; color: #999; cursor: not-allowed; }
+.submit-btn:active:not(:disabled) { transform: scale(0.98); }
+
+.back-btn { display: flex; align-items: center; gap: 6px; background: none; border: none; color: #2E5597; font-size: 13px; font-weight: 600; cursor: pointer; padding: 0; margin-bottom: 14px; }
+.back-btn svg { width: 16px; height: 16px; stroke: #2E5597; fill: none; stroke-width: 2.5; }
+
+.success-screen { text-align: center; padding: 40px 20px; }
+.success-screen .big-check { width: 72px; height: 72px; background: #70AD47; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
+.success-screen .big-check svg { width: 36px; height: 36px; stroke: white; fill: none; stroke-width: 2.5; }
+.success-screen h2 { font-size: 22px; font-weight: 700; color: #1F3864; }
+.success-screen p { font-size: 13px; color: #666; margin-top: 6px; }
+.next-btn { margin-top: 20px; padding: 14px 32px; background: #1F3864; border: none; border-radius: 10px; color: white; font-size: 15px; font-weight: 600; cursor: pointer; }
+
+.job-card { background: white; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.07); border-left: 4px solid #ED7D31; cursor: pointer; transition: background 0.15s; }
+.job-card:hover { background: #fafafa; }
+.job-card.completed { border-left-color: #70AD47; }
+.job-card.investigating { border-left-color: #2E5597; }
+.job-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.job-card-asset { font-size: 16px; font-weight: 700; color: #1F3864; }
+.job-card-line { font-size: 12px; font-weight: 600; color: #888; }
+.job-card-fault { font-size: 13px; color: #444; margin-bottom: 4px; }
+.job-card-meta { font-size: 11px; color: #aaa; }
+.status-pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.pill-open { background: #FCE4D6; color: #843C0C; }
+.pill-investigating { background: #DEEAF1; color: #1F497D; }
+.pill-completed { background: #E2EFDA; color: #3B6D11; }
+
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.summary-card { background: white; border-radius: 10px; padding: 14px 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.summary-val { font-size: 26px; font-weight: 700; color: #1F3864; }
+.summary-lbl { font-size: 10px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 3px; }
+
+.dt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dt-table th { text-align: left; font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; padding: 6px 8px; border-bottom: 2px solid #f0f2f5; }
+.dt-table td { padding: 8px 8px; border-bottom: 1px solid #f5f5f5; color: #333; }
+.dt-table tr:last-child td { border-bottom: none; }
+
+.mech-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.mech-tab { flex: 1; padding: 9px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; color: #666; background: white; transition: all 0.15s; }
+.mech-tab.active { background: #1F3864; color: white; border-color: #1F3864; }
+
+.section { display: none; }
+.section.active { display: block; }
+
+.detail-header { background: #1F3864; color: white; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.detail-asset { font-size: 22px; font-weight: 700; }
+.detail-type { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+.detail-line { font-size: 13px; opacity: 0.85; margin-top: 6px; }
+.detail-fault { font-size: 13px; margin-top: 4px; opacity: 0.9; }
+.detail-time { font-size: 11px; opacity: 0.65; margin-top: 8px; }
+.time-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.time-pill { background: white; border-radius: 8px; padding: 8px 12px; font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,0.07); flex: 1; min-width: 120px; }
+.time-pill-label { color: #888; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: 9px; }
+.time-pill-value { color: #1F3864; font-weight: 600; font-size: 12px; margin-top: 2px; }
+
+.empty { text-align: center; padding: 50px 20px; color: #bbb; font-size: 14px; }
+
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); padding: 12px 24px; border-radius: 10px; font-size: 14px; font-weight: 600; color: white; opacity: 0; transition: all 0.3s; z-index: 999; max-width: 340px; text-align: center; }
+.toast.success { background: #3B6D11; }
+.toast.error { background: #A32D2D; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.loading { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+.spinner { width: 28px; height: 28px; border: 3px solid #f0f2f5; border-top-color: #2E5597; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 10px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  OneSignalDeferred.push(async function(OneSignal) {
+    await OneSignal.init({
+      appId: "ab4bd890-b39e-43b3-96e9-1683db45d695",
+      serviceWorkerPath: "OneSignalSDKWorker.js",
+      serviceWorkerParam: { scope: "/" },
+     });
+
+    // Fix for the bug where our own in-app prompt used to stay visible
+    // forever if the user subscribed via any path OTHER than our own
+    // "Enable" button — e.g. OneSignal's own Auto Prompt. This listener
+    // fires whenever the subscription state changes, no matter what
+    // caused it, so our banner reliably hides either way.
+    OneSignal.User.PushSubscription.addEventListener('change', () => {
+      if (OneSignal.User.PushSubscription.optedIn) {
+        const el = document.getElementById('notifPrompt');
+        if (el) el.style.display = 'none';
+        try { localStorage.setItem('pmt_notif_dismissed', '1'); } catch(e) {}
+      }
+    });
+  });
+</script>
+</head>
+<body>
+
+<div class="header">
+  <button class="home-btn-header" id="homeBtnHeader" onclick="goHome()" title="Home">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+  </button>
+  <button class="refresh-btn-header" id="refreshBtnHeader" onclick="refreshApp()" title="Refresh">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+  </button>
+  <h1>C/ROOM  Downtime Tracker</h1>
+  <p>C/ROOM  Downtime incident management</p>
+</div>
+
+<div class="app" id="screenHome">
+
+  <div class="card" style="margin-top:8px;">
+    <div class="card-title">Select your role</div>
+    <div class="role-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="role-btn supervisor" onclick="showScreen('screenSupervisorCategory')">
+        <div class="role-icon">👔</div>
+        <div class="role-title">Supervisor</div>
+        <div class="role-sub">Log a machine down</div>
+      </div>
+      <div class="role-btn mechanic" onclick="loadMechanicScreen()">
+        <div class="role-icon">🔧</div>
+        <div class="role-title">Mechanic</div>
+        <div class="role-sub">View open job cards</div>
+      </div>
+    </div>
+
+  <div id="notifPrompt" style="display:none;background:#EBF3FB;border:1px solid #2E5597;border-radius:10px;padding:10px 12px;margin-top:14px;align-items:center;justify-content:space-between;gap:10px;">
+    <div style="font-size:12px;color:#1F3864;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">🔔 Get notified of machine downtime</div>
+    <div style="display:flex;gap:6px;flex-shrink:0;">
+      <button onclick="enableNotifications()" style="padding:6px 12px;background:#1F3864;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;">Enable</button>
+      <button onclick="dismissNotifPrompt()" style="padding:6px 9px;background:white;color:#888;border:1px solid #ddd;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;">✕</button>
+    </div>
+  </div>
+  </div>
+</div>
+
+<div class="app screen" id="screenSupervisorCategory">
+  <button class="back-btn" onclick="goScreen('screenHome')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+  <div class="card">
+    <div class="card-title">Select machine type</div>
+    <div class="role-grid">
+      <div class="role-btn supervisor" onclick="openSupervisorFlow('BULLMER')">
+        <div class="role-icon">⚙️</div>
+        <div class="role-title">Bullmer</div>
+        <div class="role-sub">Spreader / Cutter</div>
+      </div>
+      <div class="role-btn fusing" onclick="openSupervisorFlow('FUSING')">
+        <div class="role-icon">⚙️</div>
+        <div class="role-title">Fusing</div>
+        <div class="role-sub">Fusing press</div>
+      </div>
+      <div class="role-btn bandknife" onclick="openSupervisorFlow('BANDKNIFE')">
+        <div class="role-icon">⚙️</div>
+        <div class="role-title">Bandknife</div>
+        <div class="role-sub">Cutting machine</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="app screen" id="screenSupervisor">
+  <button class="back-btn" onclick="goScreen('screenSupervisorCategory')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+
+  <div id="supCategoryBanner" style="text-align:center;font-size:13px;font-weight:700;color:#1F3864;margin-bottom:10px;letter-spacing:0.03em;text-transform:uppercase;"></div>
+
+  <div id="supFormView">
+    <div class="card">
+      <div class="card-title">Step 1 — Asset</div>
+      <button class="scan-btn" id="scanBtnSup" onclick="toggleScannerSup()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg>
+        Scan Machine Barcode
+      </button>
+      <div id="readerSup"></div>
+      <div class="or-divider">— or enter manually —</div>
+      <input class="manual-input" id="supAssetInput" type="text" placeholder="Enter asset number..." oninput="supSetAsset(cleanBarcode(this.value))">
+      <div class="asset-confirmed" id="supAssetConfirmed">
+        <div style="flex:1">
+          <div class="num" id="supAssetVal"></div>
+          <div class="type" id="supMachineType"></div>
+        </div>
+        <div class="asset-check"><svg viewBox="0 0 13 13"><polyline points="2,7 5,10 11,3"/></svg></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 2 — Incident details</div>
+      <div class="field">
+        <label>Location</label>
+        <select id="supLine" onchange="checkSupReady()">
+          <option value="">Select location...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Fault reported by operator</label>
+        <select id="supFault" onchange="checkSupReady()">
+          <option value="">Select asset first...</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="submit-btn navy" id="supSubmitBtn" onclick="submitDowntime()" disabled>
+      Log Machine Down
+    </button>
+  </div>
+
+  <div id="supSuccessView" style="display:none">
+    <div class="card">
+      <div class="success-screen">
+        <div class="big-check"><svg viewBox="0 0 36 36"><polyline points="6,18 14,26 30,10"/></svg></div>
+        <h2>Job Card Created</h2>
+        <p id="supSuccessDetail">Machine logged as down</p>
+        <p style="font-size:12px;color:#aaa;margin-top:8px;">Mechanic has been notified via the app</p>
+        <button class="next-btn" onclick="resetSupervisor()">Log Another</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="app screen" id="screenMechanic">
+  <button class="back-btn" onclick="goScreen('screenHome')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+
+  <div id="mechListView">
+    <div class="summary-grid" id="mechSummary">
+      <div class="summary-card">
+        <div class="summary-val" id="sumOpen">—</div>
+        <div class="summary-lbl">Open</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-val" id="sumInvestigating">—</div>
+        <div class="summary-lbl">Active</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-val" id="sumDone">—</div>
+        <div class="summary-lbl">Done today</div>
+      </div>
+    </div>
+
+    <div class="mech-tabs">
+      <div class="mech-tab active" id="tabOpen" onclick="switchMechTab('open')">Open Jobs</div>
+      <div class="mech-tab" id="tabDone" onclick="switchMechTab('done')">Completed</div>
+      <div class="mech-tab" id="tabDowntime" onclick="switchMechTab('downtime')">Downtime</div>
+    </div>
+
+    <div class="section active" id="sectionOpen">
+      <div id="openJobsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+
+    <div class="section" id="sectionDone">
+      <div id="doneJobsList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+    </div>
+
+    <div class="section" id="sectionDowntime">
+      <div class="card">
+        <div class="card-title">Total downtime per location — today</div>
+        <div id="downtimeTable"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="mechDetailView" style="display:none">
+    <button class="back-btn" onclick="backToList()">
+      <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+      Back to job cards
+    </button>
+
+    <div class="detail-header" id="detailHeader"></div>
+
+    <div class="time-row" id="detailTimes"></div>
+
+    <div id="machineTypeConfirmSection" style="display:none">
+      <div class="card" style="border:1.5px solid #ED7D31;">
+        <div class="card-title" style="color:#ED7D31;">⚠ Machine type needed</div>
+        <p style="font-size:13px;color:#555;margin-bottom:14px;">This asset wasn't found in master data. Please confirm the correct machine type before investigating — this will also update master data so future scans resolve automatically.</p>
+        <div class="field" style="position:relative;">
+          <label>Machine type</label>
+          <input type="text" id="mtTypeInput" placeholder="Search or select type..." autocomplete="off"
+            style="width:100%;padding:13px 14px;border:1.5px solid #ddd;border-radius:10px;font-size:15px;font-family:inherit;"
+            oninput="mtFilterTypeList(this.value)" onfocus="mtShowTypeList()" onblur="mtHideTypeListDelayed()">
+          <div id="mtTypeDropdown" style="display:none;border:1.5px solid #ED7D31;border-top:none;border-radius:0 0 10px 10px;background:white;max-height:200px;overflow-y:auto;position:absolute;left:0;right:0;z-index:10;box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+        </div>
+        <button class="submit-btn orange" id="confirmMachineTypeBtn" onclick="confirmMachineType()" disabled>
+          Confirm Machine Type
+        </button>
+      </div>
+    </div>
+
+    <div id="investigateSection" style="display:none">
+      <div class="field" style="margin-bottom:12px;">
+        <label>Your name</label>
+        <select id="investigateMechName" onchange="saveMechName();">
+          <option value="">Select your name...</option>
+        </select>
+      </div>
+      <button class="submit-btn navy" id="investigateBtn" onclick="markInvestigate()" style="margin-bottom:14px;">
+        Investigate — Take this job
+      </button>
+    </div>
+
+    <div id="partsDecisionSection" style="display:none">
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-title">Spare parts required?</div>
+        <p style="font-size:13px;color:#555;margin-bottom:14px;">Does this repair require a spare part from the workshop?</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <button class="submit-btn green" onclick="showPartsRequest()" style="padding:14px;font-size:15px;">
+            Yes — Request Part
+          </button>
+          <button class="submit-btn navy" onclick="showResolveSection()" style="padding:14px;font-size:15px;">
+            No — Proceed
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="partsRequestSection" style="display:none">
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-title">Request spare part</div>
+
+        <div style="background:#EBF3FB;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
+          <span style="color:#888;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;">Machine type</span>
+          <div style="font-size:15px;font-weight:700;color:#1F3864;margin-top:2px;" id="partsJobMachineType">—</div>
+        </div>
+
+        <div class="field">
+          <label>Your name</label>
+          <select id="partsRequestMechanic" onchange="saveMechName();">
+            <option value="">Select your name...</option>
+          </select>
+        </div>
+
+        <div id="existingRequestsList" style="margin-bottom:12px;"></div>
+
+        <div class="field">
+          <label>Part description</label>
+          <input type="text" id="partDescInput" placeholder="e.g. Blade, Vacuum motor, Drive belt..."
+            style="width:100%;padding:13px 14px;border:1.5px solid #ddd;border-radius:10px;font-size:15px;font-family:inherit;"
+            onkeydown="if(event.key==='Enter'){event.preventDefault(); addPartRequest();}">
+        </div>
+        <div class="field">
+          <label>Quantity</label>
+          <input type="number" id="partQty" value="1" min="1" max="99"
+            style="width:100%;padding:13px 14px;border:1.5px solid #ddd;border-radius:10px;font-size:15px;">
+        </div>
+        <button class="submit-btn orange" id="addPartRequestBtn" onclick="addPartRequest()" style="margin-bottom:10px;">
+          + Add Part Request
+        </button>
+        <button class="submit-btn navy" id="donePartsBtn" onclick="submitAndProceed()" disabled>
+          Submit Request &amp; Proceed to Resolve
+        </button>
+      </div>
+    </div>
+
+    <div id="resolveSection" style="display:none">
+      <div class="card">
+        <div class="card-title">Resolve job card</div>
+        <div class="field">
+          <label>Your name</label>
+          <select id="mechName" onchange="saveMechName();">
+            <option value="">Select your name...</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Error code</label>
+          <select id="mechErrorCode">
+            <option value="">Select error code...</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Corrective measures taken</label>
+          <textarea id="mechCorrectiveMeasures" placeholder="Describe what you did to fix the machine..."></textarea>
+        </div>
+        <button class="submit-btn green" id="resolveBtn" onclick="markResolved()">
+          Mark as Resolved
+        </button>
+      </div>
+    </div>
+
+    <div id="completedSection" style="display:none">
+      <div class="card" id="completedDetails"></div>
+      <div class="card" id="completedParts" style="display:none;margin-top:0;"></div>
+    </div>
+  </div>
+</div>
+
+<div class="app screen" id="screenPM">
+  <button class="back-btn" onclick="goScreen('screenHome')">
+    <svg viewBox="0 0 24 24"><polyline points="15,18 9,12 15,6"/></svg>
+    Back
+  </button>
+
+  <div id="pmFormView">
+    <div class="card">
+      <div class="card-title">Step 1 — Asset</div>
+      <button class="scan-btn" id="scanBtnPM" onclick="toggleScannerPM()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg>
+        Scan Machine Barcode
+      </button>
+      <div id="readerPM"></div>
+      <div class="or-divider">— or enter manually —</div>
+      <input class="manual-input" id="pmAssetInput" type="text" placeholder="Enter asset number..." oninput="pmSetAsset(cleanBarcode(this.value))">
+      <div class="asset-confirmed" id="pmAssetConfirmed">
+        <div style="flex:1">
+          <div class="num" id="pmAssetVal"></div>
+          <div class="type" id="pmMachineType"></div>
+        </div>
+        <div class="asset-check"><svg viewBox="0 0 13 13"><polyline points="2,7 5,10 11,3"/></svg></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Step 2 — Service details</div>
+      <div class="field">
+        <label>Location</label>
+        <select id="pmLocation" onchange="checkPmReady()">
+          <option value="">Select location...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Service type</label>
+        <select id="pmServiceType" onchange="checkPmReady()">
+          <option value="">Select service tier...</option>
+          <option value="minor">Minor</option>
+          <option value="normal">Normal</option>
+          <option value="major">Major</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Machine condition</label>
+        <select id="pmCondition" onchange="checkPmReady()">
+          <option value="">Select condition...</option>
+          <option>Excellent</option>
+          <option>Good</option>
+          <option>Average</option>
+          <option>Poor</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Completed by</label>
+        <select id="pmCompletedBy" onchange="checkPmReady()">
+          <option value="">Select your name...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Next PM due (optional)</label>
+        <input type="date" id="pmNextDue" class="manual-input" style="margin-top:0;">
+      </div>
+      <div class="field">
+        <label>Notes (optional)</label>
+        <textarea id="pmNotes" placeholder="Anything worth flagging for next time..."></textarea>
+      </div>
+    </div>
+
+    <button class="submit-btn navy" id="pmSubmitBtn" onclick="submitPM()" disabled>
+      Log PM Visit
+    </button>
+  </div>
+
+  <div id="pmSuccessView" style="display:none">
+    <div class="card">
+      <div class="success-screen">
+        <div class="big-check"><svg viewBox="0 0 36 36"><polyline points="6,18 14,26 30,10"/></svg></div>
+        <h2>PM Logged</h2>
+        <p id="pmSuccessDetail">Service visit recorded</p>
+        <button class="next-btn" onclick="resetPM()">Log Another</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div id="dupOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:flex-end;justify-content:center;">
+  <div style="background:white;border-radius:20px 20px 0 0;padding:24px;width:100%;max-width:480px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <div style="width:36px;height:36px;border-radius:50%;background:#FCE4D6;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">🔒</div>
+      <div style="font-size:17px;font-weight:700;color:#C00000;">Asset already logged as down</div>
+    </div>
+    <div style="font-size:13px;color:#666;margin-bottom:16px;">This asset cannot be logged for downtime again until the existing incident is resolved.</div>
+    <div id="dupTicketDetails" style="background:#f8f9fa;border-radius:10px;padding:14px;margin-bottom:16px;border-left:4px solid #ED7D31;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <button onclick="viewExistingTicket()" style="padding:13px;background:#1F3864;color:white;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">View ticket</button>
+      <button onclick="closeDupOverlay()" style="padding:13px;background:#f0f2f5;color:#555;border:1.5px solid #ddd;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api';
+
+function refreshApp() {
+  const btn = document.getElementById('refreshBtnHeader');
+  if (btn) btn.classList.add('spinning');
+  window.location.reload();
+}
+
+let currentAssetNo = '';
+let currentMachineType = '';
+let supervisorCategory = 'BULLMER';
+let currentJobId = null;
+let currentJobData = null;
+let supScanner = null;
+let supScannerActive = false;
+let allJobs = [];
+
+const SUPERVISOR_CATEGORY_LABELS = { 'BULLMER': 'Bullmer — Spreader / Cutter', 'FUSING': 'Fusing Press', 'BANDKNIFE': 'Bandknife' };
+
+function openSupervisorFlow(category) {
+  supervisorCategory = category;
+  document.getElementById('supCategoryBanner').textContent = SUPERVISOR_CATEGORY_LABELS[category] || category;
+  resetSupervisor();
+  goScreen('screenSupervisor');
+}
+
+function populateConfigDrivenSelects() {
+  const locSel = document.getElementById('supLine');
+  locSel.innerHTML = '<option value="">Select location...</option>' +
+    LOCATIONS.map(l => '<option>' + l + '</option>').join('');
+  document.getElementById('pmLocation').innerHTML = '<option value="">Select location...</option>' +
+    LOCATIONS.map(l => '<option>' + l + '</option>').join('');
+
+  ['investigateMechName', 'partsRequestMechanic', 'mechName', 'pmCompletedBy'].forEach(id => {
+    populateMechanicSelect(id, null);
+  });
+  populateResolveCodeDropdown(null);
+
+  populateFaultDropdown(null);
+}
+
+function populateMechanicSelect(selectId, machineType) {
+  const list = getMechanicsForType(machineType);
+  const el = document.getElementById(selectId);
+  const prevVal = el.value;
+  el.innerHTML = '<option value="">Select your name...</option>' +
+    list.map(m => '<option' + (m === prevVal ? ' selected' : '') + '>' + m + '</option>').join('');
+}
+
+function populateResolveCodeDropdown(machineType) {
+  const list = getResolveCodesForType(machineType);
+  document.getElementById('mechErrorCode').innerHTML =
+    '<option value="">Select error code...</option>' +
+    list.map(c => '<option>' + c + '</option>').join('');
+}
+
+function populateFaultDropdown(machineType) {
+  const sel = document.getElementById('supFault');
+  const prevVal = sel.value;
+  const faults = getFaultListForType(machineType);
+  sel.innerHTML = '<option value="">Select fault...</option>' +
+    faults.map(f => '<option' + (f === prevVal ? ' selected' : '') + '>' + f + '</option>').join('');
+  checkSupReady();
+}
+
+function goScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if (id === 'screenHome') {
+    document.getElementById('screenHome').style.display = 'block';
+  }
+}
+
+function showScreen(id) {
+  document.getElementById('screenHome').style.display = 'none';
+  goScreen(id);
+}
+
+// Jumps straight to Home from any screen, regardless of how deep the user
+// is (e.g. mid-way through a job card or the Supervisor form) — used by
+// the header's Home button. Stops any active scanner/live-timer first so
+// nothing keeps running in the background after leaving that screen.
+function goHome() {
+  if (supScannerActive) stopScannerSup();
+  if (pmScannerActive) stopScannerPM();
+  stopLiveTimer();
+  goScreen('screenHome');
+}
+
+function toggleScannerSup() {
+  if (supScannerActive) stopScannerSup();
+  else startScannerSup();
+}
+
+function cleanBarcode(val) {
+  return val.replace(/\s+/g, '').toUpperCase();
+}
+
+function isValidBarcode(val) {
+  if (/^\d+$/.test(val)) return val.length >= 5;
+  return val.length >= 6 && val.length <= 7;
+}
+
+function startScannerSup() {
+  const btn = document.getElementById('scanBtnSup');
+  btn.classList.add('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Stop Camera`;
+  document.getElementById('readerSup').style.display = 'block';
+  supScannerActive = true;
+
+  let lastRead = '';
+  let lastReadTime = 0;
+  const DEBOUNCE_MS = 300;
+
+  supScanner = new Html5Qrcode('readerSup');
+  supScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 100 } },
+    (decoded) => {
+      const clean = cleanBarcode(decoded);
+      const now = Date.now();
+
+      if (clean === lastRead && (now - lastReadTime) < DEBOUNCE_MS) {
+        if (!isValidBarcode(clean)) {
+          showToast('Invalid barcode: ' + clean + ' — check and try again.', 'error');
+          lastRead = '';
+          lastReadTime = 0;
+          return;
+        }
+        supSetAsset(clean);
+        document.getElementById('supAssetInput').value = clean;
+        stopScannerSup();
+        showToast('Barcode scanned!', 'success');
+      } else {
+        lastRead = clean;
+        lastReadTime = now;
+      }
+    }, () => {}
+  ).catch(() => { showToast('Camera blocked. Use manual entry.', 'error'); stopScannerSup(); });
+}
+
+function stopScannerSup() {
+  if (supScanner) { supScanner.stop().catch(() => {}); supScanner = null; }
+  document.getElementById('readerSup').style.display = 'none';
+  const btn = document.getElementById('scanBtnSup');
+  btn.classList.remove('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg> Scan Machine Barcode`;
+  supScannerActive = false;
+}
+
+async function supSetAsset(val) {
+  const conf = document.getElementById('supAssetConfirmed');
+  if (!val || !isValidBarcode(val)) {
+    currentAssetNo = '';
+    conf.style.display = 'none';
+    populateFaultDropdown(supervisorCategory === 'BULLMER' ? null : supervisorCategory);
+    checkSupReady();
+    return;
+  }
+  currentAssetNo = val;
+
+  if (supervisorCategory !== 'BULLMER') {
+    currentMachineType = supervisorCategory;
+    document.getElementById('supAssetVal').textContent = val;
+    document.getElementById('supMachineType').textContent = 'Type: ' + currentMachineType;
+    document.getElementById('supMachineType').style.color = '#3B6D11';
+    conf.style.display = 'flex';
+    populateFaultDropdown(currentMachineType);
+    checkSupReady();
+    fetch(API_BASE + '/master-data', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_no: val, asset_type: currentMachineType })
+    }).catch(() => {});
+    return;
+  }
+
+  document.getElementById('supAssetVal').textContent = val;
+  document.getElementById('supMachineType').textContent = 'Looking up...';
+  document.getElementById('supMachineType').style.color = '#888';
+  conf.style.display = 'flex';
+  document.getElementById('supSubmitBtn').disabled = true;
+
+  const MAX_ATTEMPTS = 3;
+  let found = false;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      document.getElementById('supMachineType').textContent = 'Looking up... (attempt ' + attempt + ')';
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
+    try {
+      const res = await fetch(API_BASE + '/master-data?asset_no=' + encodeURIComponent(val));
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data && data.asset_type) {
+        currentMachineType = data.asset_type;
+        document.getElementById('supMachineType').textContent = 'Type: ' + currentMachineType;
+        document.getElementById('supMachineType').style.color = '#3B6D11';
+        found = true;
+        break;
+      } else {
+        currentMachineType = 'Unknown';
+        document.getElementById('supMachineType').textContent = 'Not found in master data — will save as Unknown';
+        document.getElementById('supMachineType').style.color = '#888';
+        found = true;
+        break;
+      }
+    } catch(e) {
+      if (attempt === MAX_ATTEMPTS) {
+        currentMachineType = 'Unknown';
+        document.getElementById('supMachineType').textContent = 'Connection issue — will save as Unknown. Check network.';
+        document.getElementById('supMachineType').style.color = '#C00000';
+      }
+    }
+  }
+
+  populateFaultDropdown(currentMachineType);
+  checkSupReady();
+}
+
+function checkSupReady() {
+  const ready = currentAssetNo &&
+    document.getElementById('supLine').value &&
+    document.getElementById('supFault').value;
+  document.getElementById('supSubmitBtn').disabled = !ready;
+}
+
+let dupExistingJob = null;
+
+async function checkExistingTicket(assetNo) {
+  if (!assetNo) return null;
+  try {
+    const res = await fetch(
+      API_BASE + '/downtime-log?asset_no=' + encodeURIComponent(assetNo) + '&open=1'
+    );
+    return await res.json();
+  } catch(e) { return null; }
+}
+
+function showDupOverlay(job) {
+  dupExistingJob = job;
+  const time = job.reported_time
+    ? new Date(job.reported_time).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+    : '—';
+  const date = job.reported_time
+    ? new Date(job.reported_time).toLocaleDateString('en-ZA', { day: '2-digit', month: '2-digit' })
+    : '—';
+  const mechInfo = job.mechanic
+    ? (job.status === 'Investigating' ? ' — being attended by ' + job.mechanic : '')
+    : '';
+  document.getElementById('dupTicketDetails').innerHTML = `
+    <div style="font-size:15px;font-weight:700;color:#1F3864;margin-bottom:6px;">${job.asset_no}</div>
+    <div style="font-size:13px;color:#555;margin-bottom:4px;">
+      <strong>${job.line || '—'}</strong> &nbsp;|&nbsp;
+      <span style="color:${job.status==='Investigating'?'#ED7D31':'#C00000'};font-weight:700;">${job.status}</span>${mechInfo}
+    </div>
+    <div style="font-size:13px;color:#555;margin-bottom:4px;">Fault: <strong>${job.fault || '—'}</strong></div>
+    <div style="font-size:11px;color:#888;">Reported: ${date} at ${time}</div>`;
+  document.getElementById('dupOverlay').style.display = 'flex';
+}
+
+function closeDupOverlay() {
+  document.getElementById('dupOverlay').style.display = 'none';
+  dupExistingJob = null;
+}
+
+function viewExistingTicket() {
+  closeDupOverlay();
+  goScreen('screenMechanic');
+  setTimeout(async () => {
+    await loadMechanicScreen();
+    if (dupExistingJob) {
+      setTimeout(() => openJobDetail(dupExistingJob.id), 400);
+    }
+  }, 200);
+}
+
+let submittingDowntime = false;
+
+async function submitDowntime() {
+  if (submittingDowntime) return;
+  submittingDowntime = true;
+
+  const btn = document.getElementById('supSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+
+  try {
+    const existing = await checkExistingTicket(currentAssetNo);
+    if (existing) {
+      showDupOverlay(existing);
+      return;
+    }
+
+    btn.textContent = 'Logging...';
+    const payload = {
+      asset_no: currentAssetNo,
+      machine_type: currentMachineType,
+      line: document.getElementById('supLine').value,
+      fault: document.getElementById('supFault').value,
+      reported_time: new Date().toISOString(),
+      status: 'Open'
+    };
+
+    const res = await fetch(API_BASE + '/downtime-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (res.ok || res.status === 201) {
+      let newJobId = null;
+      try {
+        const created = await res.json();
+        newJobId = created && created.id ? created.id : null;
+      } catch(e) {}
+      sendIncidentNotification(payload.asset_no, payload.machine_type, payload.line, payload.fault, newJobId);
+      document.getElementById('supSuccessView').style.display = 'block';
+      document.getElementById('supSuccessDetail').textContent =
+        currentAssetNo + ' (' + currentMachineType + ') — ' + payload.line + ' — ' + payload.fault;
+      setTimeout(() => resetSupervisor(), 3000);
+    } else if (res.status === 409) {
+      const raced = await checkExistingTicket(currentAssetNo);
+      btn.disabled = false;
+      btn.textContent = 'Log Machine Down';
+      if (raced) {
+        showDupOverlay(raced);
+      } else {
+        showToast('Asset already logged as down. Please refresh and check.', 'error');
+      }
+    } else {
+      showToast('Error submitting. Please try again.', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Log Machine Down';
+    }
+  } catch(e) {
+    showToast('Connection error.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Log Machine Down';
+  } finally {
+    submittingDowntime = false;
+  }
+}
+
+function resetSupervisor() {
+  if (supScannerActive) stopScannerSup();
+
+  currentAssetNo = '';
+  currentMachineType = supervisorCategory === 'BULLMER' ? '' : supervisorCategory;
+
+  document.getElementById('supAssetInput').value = '';
+  document.getElementById('supAssetConfirmed').style.display = 'none';
+  document.getElementById('supMachineType').textContent = '';
+  document.getElementById('supMachineType').style.color = '';
+  document.getElementById('supLine').value = '';
+  populateFaultDropdown(supervisorCategory === 'BULLMER' ? null : supervisorCategory);
+  document.getElementById('supFault').value = '';
+
+  document.getElementById('supFormView').style.display = 'block';
+  document.getElementById('supSuccessView').style.display = 'none';
+
+  const btn = document.getElementById('supSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Log Machine Down';
+
+  document.getElementById('screenSupervisor').scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+let pmAssetNo = '';
+let pmMachineType = '';
+let pmScanner = null;
+let pmScannerActive = false;
+
+function toggleScannerPM() {
+  if (pmScannerActive) stopScannerPM();
+  else startScannerPM();
+}
+
+function startScannerPM() {
+  const btn = document.getElementById('scanBtnPM');
+  btn.classList.add('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Stop Camera`;
+  document.getElementById('readerPM').style.display = 'block';
+  pmScannerActive = true;
+
+  let lastRead = '';
+  let lastReadTime = 0;
+  const DEBOUNCE_MS = 300;
+
+  pmScanner = new Html5Qrcode('readerPM');
+  pmScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 100 } },
+    (decoded) => {
+      const clean = cleanBarcode(decoded);
+      const now = Date.now();
+      if (clean === lastRead && (now - lastReadTime) < DEBOUNCE_MS) {
+        if (!isValidBarcode(clean)) {
+          showToast('Invalid barcode: ' + clean + ' — check and try again.', 'error');
+          lastRead = ''; lastReadTime = 0;
+          return;
+        }
+        pmSetAsset(clean);
+        document.getElementById('pmAssetInput').value = clean;
+        stopScannerPM();
+        showToast('Barcode scanned!', 'success');
+      } else {
+        lastRead = clean; lastReadTime = now;
+      }
+    }, () => {}
+  ).catch(() => { showToast('Camera blocked. Use manual entry.', 'error'); stopScannerPM(); });
+}
+
+function stopScannerPM() {
+  if (pmScanner) { pmScanner.stop().catch(() => {}); pmScanner = null; }
+  document.getElementById('readerPM').style.display = 'none';
+  const btn = document.getElementById('scanBtnPM');
+  btn.classList.remove('scanning');
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12" stroke-width="2.5"/></svg> Scan Machine Barcode`;
+  pmScannerActive = false;
+}
+
+async function pmSetAsset(val) {
+  const conf = document.getElementById('pmAssetConfirmed');
+  if (!val || !isValidBarcode(val)) {
+    pmAssetNo = '';
+    conf.style.display = 'none';
+    populateMechanicSelect('pmCompletedBy', null);
+    checkPmReady();
+    return;
+  }
+  pmAssetNo = val;
+
+  document.getElementById('pmAssetVal').textContent = val;
+  document.getElementById('pmMachineType').textContent = 'Looking up...';
+  document.getElementById('pmMachineType').style.color = '#888';
+  conf.style.display = 'flex';
+  document.getElementById('pmSubmitBtn').disabled = true;
+
+  try {
+    const res = await fetch(API_BASE + '/master-data?asset_no=' + encodeURIComponent(val));
+    const data = await res.json();
+    if (data && data.asset_type) {
+      pmMachineType = data.asset_type;
+      document.getElementById('pmMachineType').textContent = 'Type: ' + pmMachineType;
+      document.getElementById('pmMachineType').style.color = '#3B6D11';
+    } else {
+      pmMachineType = 'Unknown';
+      document.getElementById('pmMachineType').textContent = 'Not found in master data — will save as Unknown';
+      document.getElementById('pmMachineType').style.color = '#888';
+    }
+  } catch(e) {
+    pmMachineType = 'Unknown';
+    document.getElementById('pmMachineType').textContent = 'Connection issue — will save as Unknown';
+    document.getElementById('pmMachineType').style.color = '#C00000';
+  }
+  populateMechanicSelect('pmCompletedBy', pmMachineType);
+  checkPmReady();
+}
+
+function checkPmReady() {
+  const ready = pmAssetNo &&
+    document.getElementById('pmLocation').value &&
+    document.getElementById('pmServiceType').value &&
+    document.getElementById('pmCondition').value &&
+    document.getElementById('pmCompletedBy').value;
+  document.getElementById('pmSubmitBtn').disabled = !ready;
+}
+
+let submittingPM = false;
+
+async function submitPM() {
+  if (submittingPM) return;
+  submittingPM = true;
+
+  const btn = document.getElementById('pmSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Logging...';
+
+  const payload = {
+    asset_no: pmAssetNo,
+    machine_type: pmMachineType,
+    location: document.getElementById('pmLocation').value,
+    service_type: document.getElementById('pmServiceType').value,
+    completed_by: document.getElementById('pmCompletedBy').value,
+    completed_date: new Date().toISOString().split('T')[0],
+    machine_condition: document.getElementById('pmCondition').value,
+    next_due_date: document.getElementById('pmNextDue').value || null,
+    overall_note: document.getElementById('pmNotes').value.trim()
+  };
+
+  try {
+    const res = await fetch(API_BASE + '/pm-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok || res.status === 201) {
+      document.getElementById('pmFormView').style.display = 'none';
+      document.getElementById('pmSuccessView').style.display = 'block';
+      document.getElementById('pmSuccessDetail').textContent =
+        pmAssetNo + ' (' + pmMachineType + ') — ' + payload.service_type + ' service at ' + payload.location;
+      setTimeout(() => resetPM(), 2500);
+    } else {
+      showToast('Error logging PM. Please try again.', 'error');
+      btn.disabled = false; btn.textContent = 'Log PM Visit';
+    }
+  } catch(e) {
+    showToast('Connection error.', 'error');
+    btn.disabled = false; btn.textContent = 'Log PM Visit';
+  } finally {
+    submittingPM = false;
+  }
+}
+
+function resetPM() {
+  if (pmScannerActive) stopScannerPM();
+  pmAssetNo = '';
+  pmMachineType = '';
+  document.getElementById('pmAssetInput').value = '';
+  document.getElementById('pmAssetConfirmed').style.display = 'none';
+  document.getElementById('pmLocation').value = '';
+  document.getElementById('pmServiceType').value = '';
+  document.getElementById('pmCondition').value = '';
+  document.getElementById('pmCompletedBy').value = '';
+  document.getElementById('pmNextDue').value = '';
+  document.getElementById('pmNotes').value = '';
+  document.getElementById('pmFormView').style.display = 'block';
+  document.getElementById('pmSuccessView').style.display = 'none';
+  const btn = document.getElementById('pmSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Log PM Visit';
+  window.scrollTo(0, 0);
+}
+
+async function loadMechanicScreen() {
+  setTimeout(loadMechName, 100);
+  showScreen('screenMechanic');
+  document.getElementById('mechListView').style.display = 'block';
+  document.getElementById('mechDetailView').style.display = 'none';
+  await fetchJobs();
+}
+
+async function fetchJobs() {
+  try {
+    const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00';
+    const res = await fetch(
+      API_BASE + '/downtime-log?mode=mechanic&resolvedAfter=' + encodeURIComponent(todayStart)
+    );
+    allJobs = await res.json();
+    renderMechanicView();
+  } catch(e) {
+    showToast('Could not load job cards.', 'error');
+  }
+}
+
+function renderMechanicView() {
+  const today = new Date().toISOString().split('T')[0];
+  const open  = allJobs.filter(j => j.status === 'Open');
+  const investigating = allJobs.filter(j => j.status === 'Investigating');
+  const openAndInv = [...open, ...investigating];
+  const done  = allJobs.filter(j => j.status === 'Resolved' && (j.resolved_time || '').startsWith(today));
+
+  document.getElementById('sumOpen').textContent = openAndInv.length;
+  document.getElementById('sumInvestigating').textContent = investigating.length;
+  document.getElementById('sumDone').textContent = done.length;
+
+  if (openAndInv.length === 0) {
+    document.getElementById('openJobsList').innerHTML = '<div class="empty">No open job cards — all clear!</div>';
+  } else {
+    document.getElementById('openJobsList').innerHTML = openAndInv.map(j => jobCardHTML(j)).join('');
+  }
+
+  if (done.length === 0) {
+    document.getElementById('doneJobsList').innerHTML = '<div class="empty">No completed jobs today yet.</div>';
+  } else {
+    document.getElementById('doneJobsList').innerHTML = done.map(j => jobCardHTML(j)).join('');
+  }
+
+  renderDowntimeTable(done);
+}
+
+function jobCardHTML(j) {
+  const statusClass = j.status === 'Resolved' ? 'completed' : j.status === 'Investigating' ? 'investigating' : '';
+  const pillClass   = j.status === 'Resolved' ? 'pill-completed' : j.status === 'Investigating' ? 'pill-investigating' : 'pill-open';
+  const time = j.reported_time ? new Date(j.reported_time).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const downtime = j.total_downtime_minutes ? formatMins(j.total_downtime_minutes) : '';
+  const mechInfo = j.status === 'Investigating' && j.mechanic
+    ? ` &nbsp;|&nbsp; 🔧 ${j.mechanic}`
+    : j.status === 'Resolved' && j.mechanic
+    ? ` &nbsp;|&nbsp; ✓ ${j.mechanic}`
+    : '';
+  const unknownFlag = (j.status !== 'Resolved' && (!j.machine_type || j.machine_type === 'Unknown'))
+    ? ` &nbsp;|&nbsp; <span style="color:#C00000;font-weight:700;">⚠ Type unknown</span>`
+    : '';
+  return `<div class="job-card ${statusClass}" onclick="openJobDetail(${j.id})">
+    <div class="job-card-top">
+      <div class="job-card-asset">${j.asset_no || '—'}</div>
+      <div><span class="status-pill ${pillClass}">${j.status}</span></div>
+    </div>
+    <div class="job-card-line">${j.line || '—'} &nbsp;|&nbsp; ${j.machine_type || '—'}</div>
+    <div class="job-card-fault">${j.fault || '—'}</div>
+    <div class="job-card-meta">Reported: ${time}${downtime ? ' &nbsp;|&nbsp; Downtime: ' + downtime : ''}${mechInfo}${unknownFlag}</div>
+  </div>`;
+}
+
+function renderDowntimeTable(jobs) {
+  if (jobs.length === 0) {
+    document.getElementById('downtimeTable').innerHTML = '<div class="empty" style="padding:20px;">No completed jobs today.</div>';
+    return;
+  }
+  const byLine = {};
+  jobs.forEach(j => {
+    if (!byLine[j.line]) byLine[j.line] = 0;
+    byLine[j.line] += j.total_downtime_minutes || 0;
+  });
+  const sorted = Object.entries(byLine).sort((a,b) => b[1]-a[1]);
+  let html = '<table class="dt-table"><thead><tr><th>Location</th><th>Incidents</th><th>Total downtime</th></tr></thead><tbody>';
+  sorted.forEach(([line, mins]) => {
+    const count = jobs.filter(j => j.line === line).length;
+    html += `<tr><td><strong>${line}</strong></td><td>${count}</td><td>${formatMins(mins)}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('downtimeTable').innerHTML = html;
+}
+
+function formatMins(mins) {
+  if (!mins) return '0min';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}hr ${m}min` : `${m}min`;
+}
+
+function formatWallClock(ms) {
+  const totalMins = Math.floor(ms / 60000);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h >= 24) return Math.floor(h/24) + 'd ' + (h%24) + 'h ' + m + 'min';
+  return h > 0 ? h + 'h ' + m + 'min' : m + 'min';
+}
+
+let liveTimerInterval = null;
+let liveTimerStart    = null;
+let liveTimerLocation = null;
+
+function startLiveTimer(reportedISO, location) {
+  stopLiveTimer();
+  liveTimerStart = reportedISO;
+  liveTimerLocation = location;
+  liveTimerInterval = setInterval(() => {
+    const wallEl  = document.getElementById('wallClockPill');
+    const shiftEl = document.getElementById('shiftTimePill');
+    if (!wallEl || !shiftEl) { stopLiveTimer(); return; }
+    const wallMs    = Date.now() - new Date(liveTimerStart).getTime();
+    const shiftMins = shiftAwareElapsed(liveTimerStart, liveTimerLocation);
+    wallEl.textContent  = formatWallClock(wallMs);
+    shiftEl.textContent = formatMins(shiftMins);
+  }, 30000);
+}
+
+function stopLiveTimer() {
+  if (liveTimerInterval) {
+    clearInterval(liveTimerInterval);
+    liveTimerInterval = null;
+    liveTimerStart    = null;
+    liveTimerLocation = null;
+  }
+}
+
+function switchMechTab(tab) {
+  document.querySelectorAll('.mech-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+  document.getElementById('section' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+}
+
+let mtSelectedCode = '';
+
+function mtFilterTypeList(q) {
+  const dropdown = document.getElementById('mtTypeDropdown');
+  const filtered = q.length === 0
+    ? MACHINE_TYPES
+    : MACHINE_TYPES.filter(t =>
+        t.code.toLowerCase().includes(q.toLowerCase()) ||
+        t.desc.toLowerCase().includes(q.toLowerCase())
+      );
+  mtRenderTypeDropdown(filtered);
+  dropdown.style.display = filtered.length > 0 ? 'block' : 'none';
+
+  if (q !== mtSelectedCode) {
+    mtSelectedCode = '';
+    document.getElementById('confirmMachineTypeBtn').disabled = true;
+  }
+}
+
+function mtShowTypeList() {
+  const q = document.getElementById('mtTypeInput').value;
+  mtFilterTypeList(q);
+}
+
+function mtHideTypeListDelayed() {
+  setTimeout(() => { document.getElementById('mtTypeDropdown').style.display = 'none'; }, 200);
+}
+
+function mtRenderTypeDropdown(types) {
+  const dropdown = document.getElementById('mtTypeDropdown');
+  dropdown.innerHTML = types.map(t =>
+    `<div onclick="mtSelectType('${t.code.replace(/'/g,"\\'")}','${t.desc.replace(/'/g,"\\'")}')"
+      style="padding:10px 14px;cursor:pointer;border-bottom:1px solid #f5f5f5;font-size:14px;"
+      onmouseover="this.style.background='#f0f2f5'" onmouseout="this.style.background='white'">
+      <strong>${t.code}</strong>
+      <span style="color:#888;font-size:12px;margin-left:8px;">${t.desc}</span>
+    </div>`
+  ).join('');
+}
+
+function mtSelectType(code, desc) {
+  document.getElementById('mtTypeInput').value = code;
+  document.getElementById('mtTypeDropdown').style.display = 'none';
+  mtSelectedCode = code;
+  document.getElementById('confirmMachineTypeBtn').disabled = false;
+}
+
+function showMachineTypeConfirm() {
+  document.getElementById('investigateSection').style.display = 'none';
+  document.getElementById('machineTypeConfirmSection').style.display = 'block';
+
+  const input = document.getElementById('mtTypeInput');
+  const btn = document.getElementById('confirmMachineTypeBtn');
+  input.value = '';
+  mtSelectedCode = '';
+  btn.disabled = true;
+  btn.textContent = 'Confirm Machine Type';
+}
+
+async function confirmMachineType() {
+  const type = mtSelectedCode || document.getElementById('mtTypeInput').value.trim();
+  if (!type || !mtSelectedCode) { showToast('Please pick a machine type from the list.', 'error'); return; }
+
+  const btn = document.getElementById('confirmMachineTypeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Confirming...';
+
+  try {
+    const jobRes = await fetch(API_BASE + '/downtime-log/' + currentJobId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ machine_type: type })
+    });
+    if (!jobRes.ok) throw new Error('job update failed');
+
+    const assetNo = currentJobData.asset_no;
+    try {
+      await fetch(API_BASE + '/master-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_no: assetNo, asset_type: type })
+      });
+    } catch(e) {
+      console.warn('master_data upsert failed:', e);
+    }
+
+    currentJobData.machine_type = type;
+    const cached = allJobs.find(j => j.id === currentJobId);
+    if (cached) cached.machine_type = type;
+
+    document.getElementById('machineTypeConfirmSection').style.display = 'none';
+    populateMechanicSelect('investigateMechName', type);
+    document.getElementById('investigateSection').style.display = 'block';
+
+    document.querySelector('#detailHeader .detail-type').textContent = type;
+
+    showToast('Machine type confirmed — master data updated.', 'success');
+  } catch(e) {
+    showToast('Could not confirm machine type. Try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Confirm Machine Type';
+  }
+}
+
+function openJobDetail(id) {
+  currentJobId = id;
+  currentJobData = allJobs.find(j => j.id === id);
+  if (!currentJobData) return;
+  const j = currentJobData;
+
+  document.getElementById('mechListView').style.display = 'none';
+  document.getElementById('mechDetailView').style.display = 'block';
+
+  document.getElementById('detailHeader').innerHTML = `
+    <div class="detail-asset">${j.asset_no}</div>
+    <div class="detail-type">${j.machine_type || ''}</div>
+    <div class="detail-line">${j.line} &nbsp;|&nbsp; <span class="status-pill ${j.status==='Resolved'?'pill-completed':j.status==='Investigating'?'pill-investigating':'pill-open'}">${j.status}</span></div>
+    <div class="detail-fault">Fault: ${j.fault}</div>
+    <div class="detail-time">Reported by ${j.reported_by} at ${j.reported_time ? new Date(j.reported_time).toLocaleString('en-ZA',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}) : '—'}</div>
+    ${j.mechanic && j.status === 'Investigating' ? `<div class="detail-time" style="color:#2E5597;font-weight:600;opacity:1;">🔧 Being investigated by ${j.mechanic}</div>` : ''}
+    ${j.mechanic && j.status === 'Resolved'      ? `<div class="detail-time" style="color:#3B6D11;font-weight:600;opacity:1;">✓ Resolved by ${j.mechanic}</div>` : ''}`;
+
+  let timesHTML = `<div class="time-pill"><div class="time-pill-label">Reported</div><div class="time-pill-value">${j.reported_time ? new Date(j.reported_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'}) : '—'}</div></div>`;
+  if (j.investigate_time) timesHTML += `<div class="time-pill"><div class="time-pill-label">Investigated</div><div class="time-pill-value">${new Date(j.investigate_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'})}</div></div>`;
+  if (j.resolved_time) timesHTML += `<div class="time-pill"><div class="time-pill-label">Resolved</div><div class="time-pill-value">${new Date(j.resolved_time).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'})}</div></div>`;
+  if (j.total_downtime_minutes) timesHTML += `<div class="time-pill" style="background:#FCE4D6;"><div class="time-pill-label">Production lost</div><div class="time-pill-value" style="color:#843C0C;">${formatMins(j.total_downtime_minutes)}</div></div>`;
+
+  if (j.status !== 'Resolved' && j.reported_time) {
+    const wallMs       = Date.now() - new Date(j.reported_time).getTime();
+    const shiftMins    = shiftAwareElapsed(j.reported_time, j.line);
+    timesHTML += `
+      <div class="time-pill" style="background:#FFF2CC;border:1px solid #C9A84C;">
+        <div class="time-pill-label" style="color:#8B6914;">⏱ Open for</div>
+        <div class="time-pill-value" style="color:#8B6914;" id="wallClockPill">${formatWallClock(wallMs)}</div>
+      </div>
+      <div class="time-pill" style="background:#FCE4D6;border:1px solid #C00000;">
+        <div class="time-pill-label" style="color:#843C0C;">📉 Production lost</div>
+        <div class="time-pill-value" style="color:#843C0C;" id="shiftTimePill">${formatMins(shiftMins)}</div>
+      </div>`;
+    startLiveTimer(j.reported_time, j.line);
+  }
+
+  document.getElementById('detailTimes').innerHTML = timesHTML;
+
+  document.getElementById('machineTypeConfirmSection').style.display = 'none';
+  document.getElementById('investigateSection').style.display = 'none';
+  document.getElementById('resolveSection').style.display = 'none';
+  document.getElementById('completedSection').style.display = 'none';
+  document.getElementById('partsDecisionSection').style.display = 'none';
+
+  const machineTypeUnknown = !j.machine_type || j.machine_type === 'Unknown';
+
+  if (j.status === 'Open') {
+    if (machineTypeUnknown) {
+      showMachineTypeConfirm();
+    } else {
+      populateMechanicSelect('investigateMechName', j.machine_type);
+      document.getElementById('investigateSection').style.display = 'block';
+    }
+  } else if (j.status === 'Investigating') {
+    document.getElementById('partsDecisionSection').style.display = 'block';
+  } else if (j.status === 'Resolved') {
+    document.getElementById('completedSection').style.display = 'block';
+    document.getElementById('completedDetails').innerHTML = `
+      <div class="card-title">Resolution details</div>
+      <p style="font-size:13px;color:#555;margin-bottom:8px;"><strong>Mechanic:</strong> ${j.mechanic || '—'}</p>
+      <p style="font-size:13px;color:#555;margin-bottom:8px;"><strong>Error code:</strong> ${j.error_code || '—'}</p>
+      <p style="font-size:13px;color:#555;margin-bottom:4px;"><strong>Corrective measures:</strong></p>
+      <p style="font-size:13px;color:#333;line-height:1.6;">${j.corrective_measures || '—'}</p>`;
+    loadCompletedParts(j.id);
+  }
+
+  pendingRequests = [];
+}
+
+function backToList() {
+  stopLiveTimer();
+  document.getElementById('mechListView').style.display = 'block';
+  document.getElementById('mechDetailView').style.display = 'none';
+  fetchJobs();
+}
+
+async function markInvestigate() {
+  const mechSel = document.getElementById('investigateMechName');
+  const mechName = mechSel ? mechSel.value : '';
+  if (!mechName) { showToast('Please select your name before taking this job.', 'error'); return; }
+  if (!currentJobData.machine_type || currentJobData.machine_type === 'Unknown') {
+    showToast('Please confirm the machine type first.', 'error');
+    showMachineTypeConfirm();
+    return;
+  }
+  const btn = document.getElementById('investigateBtn');
+  btn.disabled = true; btn.textContent = 'Updating...';
+  const now = new Date().toISOString();
+  const responseMins = shiftAwareMinutes(currentJobData.reported_time, now, currentJobData.line);
+  try {
+    const res = await fetch(API_BASE + '/downtime-log/' + currentJobId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'Investigating', investigate_time: now, response_minutes: responseMins, mechanic: mechName })
+    });
+    if (res.ok) {
+      showToast('Job card taken — go fix it!', 'success');
+      await fetchJobs();
+      currentJobData = allJobs.find(j => j.id === currentJobId);
+      openJobDetail(currentJobId);
+    } else {
+      showToast('Update failed.', 'error');
+      btn.disabled = false; btn.textContent = 'Investigate — Take this job';
+    }
+  } catch(e) { showToast('Connection error.', 'error'); btn.disabled = false; btn.textContent = 'Investigate — Take this job'; }
+}
+
+async function markResolved() {
+  const mechName   = document.getElementById('mechName').value;
+  const errorCode  = document.getElementById('mechErrorCode').value;
+  const corrective = document.getElementById('mechCorrectiveMeasures').value.trim();
+  if (!mechName)   { showToast('Please select your name.', 'error'); return; }
+  if (!errorCode)  { showToast('Please select an error code.', 'error'); return; }
+  if (!corrective) { showToast('Please describe corrective measures.', 'error'); return; }
+
+  const btn = document.getElementById('resolveBtn');
+  btn.disabled = true; btn.textContent = 'Resolving...';
+
+  const now = new Date().toISOString();
+  const reported    = currentJobData.reported_time    ? new Date(currentJobData.reported_time)    : new Date();
+  const investigate = currentJobData.investigate_time ? new Date(currentJobData.investigate_time) : new Date();
+
+  const totalMins  = shiftAwareMinutes(currentJobData.reported_time, now, currentJobData.line);
+  const repairMins = currentJobData.investigate_time
+    ? shiftAwareMinutes(currentJobData.investigate_time, now, currentJobData.line)
+    : totalMins;
+  const responseMins = currentJobData.investigate_time
+    ? shiftAwareMinutes(currentJobData.reported_time, currentJobData.investigate_time, currentJobData.line)
+    : 0;
+
+  try {
+    const res = await fetch(API_BASE + '/downtime-log/' + currentJobId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'Resolved',
+        mechanic: mechName,
+        error_code: errorCode,
+        corrective_measures: corrective,
+        resolved_time: now,
+        repair_minutes: repairMins,
+        total_downtime_minutes: totalMins
+      })
+    });
+    if (res.ok) {
+      const partsMsg = pendingRequests.length > 0 ? ' Parts requested: ' + pendingRequests.length + '.' : '';
+      showToast('Resolved! Downtime: ' + formatMins(totalMins) + '.' + partsMsg, 'success');
+      sendResolvedNotification(currentJobData.asset_no, currentJobData.line);
+      pendingRequests = [];
+      await fetchJobs();
+      backToList();
+    } else {
+      showToast('Update failed.', 'error');
+      btn.disabled = false; btn.textContent = 'Mark as Resolved';
+    }
+  } catch(e) { showToast('Connection error.', 'error'); btn.disabled = false; btn.textContent = 'Mark as Resolved'; }
+}
+
+let pendingRequests = [];
+let addingPartRequest = false;
+let submittingParts = false;
+
+function generatePartsBatchId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function showPartsRequest() {
+  document.getElementById('partsDecisionSection').style.display = 'none';
+  document.getElementById('partsRequestSection').style.display = 'block';
+  const mt = (currentJobData && currentJobData.machine_type) ? currentJobData.machine_type : '—';
+  document.getElementById('partsJobMachineType').textContent = mt;
+  populateMechanicSelect('partsRequestMechanic', currentJobData ? currentJobData.machine_type : null);
+  pendingRequests = [];
+  renderExistingRequests();
+  document.getElementById('partDescInput').focus();
+}
+
+function showResolveSection() {
+  document.getElementById('partsDecisionSection').style.display = 'none';
+  document.getElementById('partsRequestSection').style.display = 'none';
+  const mt = currentJobData ? currentJobData.machine_type : null;
+  populateMechanicSelect('mechName', mt);
+  populateResolveCodeDropdown(mt);
+  document.getElementById('resolveSection').style.display = 'block';
+}
+
+function addPartRequest() {
+  if (addingPartRequest) return;
+  addingPartRequest = true;
+  const addBtn = document.getElementById('addPartRequestBtn');
+  addBtn.disabled = true;
+
+  try {
+    const input = document.getElementById('partDescInput');
+    const desc = input.value.trim();
+    const qty  = parseInt(document.getElementById('partQty').value) || 1;
+
+    if (!desc) {
+      showToast('Please describe the part needed.', 'error');
+      return;
+    }
+
+    const existing = pendingRequests.find(
+      r => r.description.toLowerCase() === desc.toLowerCase()
+    );
+    if (existing) {
+      existing.quantity += qty;
+      showToast('Updated quantity for ' + existing.description + '.', 'success');
+    } else {
+      pendingRequests.push({ description: desc, part_no: '', quantity: qty });
+      showToast('Part added to request.', 'success');
+    }
+
+    input.value = '';
+    document.getElementById('partQty').value = 1;
+    input.focus();
+    renderExistingRequests();
+  } finally {
+    addBtn.disabled = false;
+    addingPartRequest = false;
+  }
+}
+
+function removePartRequest(idx) {
+  pendingRequests.splice(idx, 1);
+  renderExistingRequests();
+}
+
+function renderExistingRequests() {
+  const el = document.getElementById('existingRequestsList');
+  if (pendingRequests.length === 0) {
+    el.innerHTML = '<p style="font-size:12px;color:#aaa;margin-bottom:8px;">No parts requested yet.</p>';
+    document.getElementById('donePartsBtn').disabled = true;
+    return;
+  }
+  el.innerHTML = '<div style="margin-bottom:10px;">' +
+    pendingRequests.map((r, i) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#f5f5f5;border-radius:8px;margin-bottom:6px;font-size:13px;">
+        <div>
+          <strong>${r.description}</strong>
+          <span style="color:#2E5597;font-weight:600;margin-left:8px;">x${r.quantity}</span>
+        </div>
+        <button onclick="removePartRequest(${i})" style="background:none;border:none;color:#C00000;font-size:18px;cursor:pointer;padding:0 4px;line-height:1;">x</button>
+      </div>`).join('') + '</div>';
+  document.getElementById('donePartsBtn').disabled = false;
+}
+
+async function submitPartRequests(jobId, assetNo, machineType, line, mechName, batchId) {
+  if (pendingRequests.length === 0) return;
+  const payloads = pendingRequests.map(r => ({
+    job_card_id: jobId,
+    asset_no: assetNo,
+    machine_type: machineType,
+    line: line,
+    mechanic: mechName,
+    part_no: '',
+    part_description: r.description,
+    quantity: r.quantity,
+    requested_time: new Date().toISOString(),
+    request_batch_id: batchId
+  }));
+
+  const res = await fetch(API_BASE + '/parts-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payloads)
+  });
+
+  if (res.ok || res.status === 201) return;
+  throw new Error('Parts request failed: ' + await res.text());
+}
+
+async function submitAndProceed() {
+  if (submittingParts) return;
+  submittingParts = true;
+
+  const mechName = document.getElementById('partsRequestMechanic').value;
+  if (!mechName) {
+    showToast('Please select your name before submitting.', 'error');
+    submittingParts = false;
+    return;
+  }
+
+  const btn = document.getElementById('donePartsBtn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting request...';
+
+  const batchId = generatePartsBatchId();
+
+  try {
+    if (pendingRequests.length > 0) {
+      await submitPartRequests(
+        currentJobId,
+        currentJobData.asset_no,
+        currentJobData.machine_type,
+        currentJobData.line,
+        mechName,
+        batchId
+      );
+      pendingRequests = [];
+    }
+
+    const resolveSelect = document.getElementById('mechName');
+    if (resolveSelect) resolveSelect.value = mechName;
+
+    showToast('Part request sent to workshop!', 'success');
+    showResolveSection();
+  } catch (e) {
+    showToast('Could not send parts request — check connection and try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Submit Request & Proceed to Resolve';
+  } finally {
+    submittingParts = false;
+  }
+}
+
+async function loadCompletedParts(jobId) {
+  try {
+    const res = await fetch(API_BASE + '/parts-requests?job_card_id=' + jobId);
+    const parts = await res.json();
+    const el = document.getElementById('completedParts');
+    if (parts.length === 0) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.innerHTML = '<div class="card-title">Parts issued</div>' +
+      parts.map(p => {
+        const returned = p.quantity_returned || 0;
+        const consumed = p.quantity_consumed || 0;
+        const isOOS    = p.status === 'Out of Stock';
+        const canReturn = p.status === 'Issued' && (p.quantity - returned) > 0;
+        const remaining = p.quantity - returned;
+        const statusPill = isOOS
+          ? `<span class="status-pill" style="background:#FCE4D6;color:#C00000;">Out of stock</span>`
+          : `<span class="status-pill ${p.status === 'Issued' ? 'pill-completed' : 'pill-open'}">${p.status}</span>`;
+        return `
+        <div style="padding:10px 0;border-bottom:1px solid #f5f5f5;${isOOS?'background:#FFF8F8;margin:0 -4px;padding:10px 4px;':''}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+            <div>
+              <strong style="font-size:13px;">${p.part_description || '—'}</strong>
+              ${p.part_no ? '<span style="color:#888;font-size:11px;"> (' + p.part_no + ')</span>' : ''}
+            </div>
+            ${statusPill}
+          </div>
+          ${isOOS ? '<div style="font-size:11px;color:#C00000;font-weight:600;margin-bottom:4px;">⚠ This part was not available in stock</div>' : ''}
+          <div style="font-size:11px;color:#666;display:flex;gap:12px;flex-wrap:wrap;">
+            <span>Requested: <strong>x${p.quantity}</strong></span>
+            ${consumed > 0 ? '<span style="color:#3B6D11;">Used: <strong>x' + consumed + '</strong></span>' : ''}
+            ${returned > 0 ? '<span style="color:#ED7D31;">Returned: <strong>x' + returned + '</strong></span>' : ''}
+          </div>
+          ${canReturn ? `<button onclick="showReturnForm(${p.id}, '${(p.part_description||'').replace(/'/g,"\\'")}', ${remaining}, '${p.part_no||''}')"
+            style="margin-top:8px;padding:6px 14px;background:#ED7D31;border:none;border-radius:6px;color:white;font-size:12px;font-weight:600;cursor:pointer;">
+            Return Part
+          </button>` : ''}
+        </div>`;
+      }).join('');
+  } catch(e) {}
+}
+
+function showReturnForm(requestId, partDesc, maxQty, partNo) {
+  const overlay = document.createElement('div');
+  overlay.id = 'returnOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  overlay.innerHTML = `
+    <div style="background:white;border-radius:14px;padding:20px;width:100%;max-width:420px;">
+      <div style="font-size:16px;font-weight:700;color:#1F3864;margin-bottom:4px;">Return Part</div>
+      <div style="font-size:13px;color:#666;margin-bottom:16px;"><strong>${partDesc}</strong> — up to x${maxQty} available to return</div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Quantity to return</label>
+        <input type="number" id="returnQty" value="${maxQty}" min="1" max="${maxQty}"
+          style="width:100%;padding:11px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:15px;">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Reason for return</label>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="radio" name="returnReason" value="Wrong part issued"> Wrong part issued</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="radio" name="returnReason" value="Not needed"> Not needed</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="radio" name="returnReason" value="Partial return"> Partial return</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="radio" name="returnReason" value="Faulty / defective"> Faulty / defective <span style="font-size:10px;color:#888;"> — awaiting supplier</span></label>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <button onclick="document.getElementById('returnOverlay').remove()"
+          style="padding:12px;border:1.5px solid #ddd;border-radius:8px;background:white;font-size:14px;cursor:pointer;">Cancel</button>
+        <button onclick="submitReturn(${requestId}, '${partDesc.replace(/'/g,"\\'")}', ${maxQty}, '${partNo}')"
+          style="padding:12px;background:#ED7D31;border:none;border-radius:8px;color:white;font-size:14px;font-weight:700;cursor:pointer;">Submit Return</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function submitReturn(requestId, partDesc, maxQty, partNo) {
+  const qty = parseInt(document.getElementById('returnQty').value) || 1;
+  const reasonEl = document.querySelector('input[name="returnReason"]:checked');
+  if (!reasonEl) { showToast('Please select a return reason.', 'error'); return; }
+  const reason = reasonEl.value;
+  if (qty < 1 || qty > maxQty) { showToast('Invalid quantity.', 'error'); return; }
+
+  try {
+    const res = await fetch(API_BASE + '/parts-returns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: requestId, quantity_returned: qty, reason })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+
+    document.getElementById('returnOverlay').remove();
+    const msg = result.stockRestored
+      ? 'Return received — stock restored by ' + qty + '.'
+      : 'Return logged — marked as awaiting supplier return. Stock not restored.';
+    showToast(msg, 'success');
+    loadCompletedParts(currentJobId);
+  } catch(e) { showToast('Return failed. Try again.', 'error'); }
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type + ' show';
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+function saveMechName() {
+  const sel = document.getElementById('mechName') || document.getElementById('partsRequestMechanic');
+  if (!sel) return;
+  const val = document.getElementById('mechName') ? document.getElementById('mechName').value : '';
+  const val2 = document.getElementById('partsRequestMechanic') ? document.getElementById('partsRequestMechanic').value : '';
+  const name = val || val2;
+  if (name) try { localStorage.setItem('pmt_mechanic', name); } catch(e) {}
+}
+
+function loadMechName() {
+  try {
+    const saved = localStorage.getItem('pmt_mechanic');
+    if (!saved) return;
+    const mechSel    = document.getElementById('mechName');
+    const partsSel   = document.getElementById('partsRequestMechanic');
+    const investSel  = document.getElementById('investigateMechName');
+    if (mechSel)   mechSel.value   = saved;
+    if (partsSel)  partsSel.value  = saved;
+    if (investSel) investSel.value = saved;
+  } catch(e) {}
+}
+
+function checkNotificationPrompt() {
+  OneSignalDeferred.push(function(OneSignal) {
+    try {
+      const optedIn = OneSignal.User.PushSubscription.optedIn;
+      const dismissed = localStorage.getItem('pmt_notif_dismissed');
+      console.log('[notifPrompt check] optedIn=' + optedIn + ' dismissed=' + dismissed + ' Notification.permission=' + Notification.permission);
+      if (!optedIn && !dismissed) {
+        document.getElementById('notifPrompt').style.display = 'flex';
+      } else if (optedIn) {
+        // Already a real subscriber — make sure the dismissed flag is set
+        // too, so this stays consistent even if it wasn't set earlier.
+        try { localStorage.setItem('pmt_notif_dismissed', '1'); } catch(e) {}
+      }
+    } catch(e) { console.warn('checkNotificationPrompt error:', e); }
+  });
+}
+
+function enableNotifications() {
+  OneSignalDeferred.push(async function(OneSignal) {
+    try {
+      await OneSignal.Notifications.requestPermission();
+      if (Notification.permission === 'granted') {
+        await OneSignal.User.PushSubscription.optIn();
+        // The global PushSubscription 'change' listener (registered at
+        // init) also handles this, but hiding it immediately here avoids
+        // any lag waiting for that event to fire.
+        document.getElementById('notifPrompt').style.display = 'none';
+        showToast('Notifications enabled!', 'success');
+      } else {
+        showToast('Notifications not enabled — check browser settings.', 'error');
+      }
+    } catch(e) {
+      showToast('Could not enable notifications.', 'error');
+    }
+  });
+}
+
+function dismissNotifPrompt() {
+  document.getElementById('notifPrompt').style.display = 'none';
+  try { localStorage.setItem('pmt_notif_dismissed', '1'); } catch(e) {}
+}
+
+async function sendIncidentNotification(assetNo, machineType, line, fault, jobId) {
+  try {
+    const title   = '🔴 Machine Down — ' + line;
+    const message = 'Asset: ' + assetNo + (machineType ? ' (' + machineType + ')' : '') + ' | ' + fault;
+    const deepLinkUrl = jobId
+      ? 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/?job=' + jobId
+      : 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/';
+
+    const res = await fetch(API_BASE + '/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, message, url: deepLinkUrl })
+    });
+
+    if (res.ok) {
+      showToast('Mechanics notified.', 'success');
+    } else {
+      console.warn('Notification error:', await res.text());
+    }
+  } catch(e) {
+    console.warn('Notification send failed:', e);
+  }
+}
+
+// Broadcast when a job is resolved — same mechanism as the down-notification,
+// just a different message. No per-person targeting: the asset number in
+// the message is what lets whoever reported it recognize their incident.
+async function sendResolvedNotification(assetNo, line) {
+  try {
+    const title   = '✅ Machine Resolved — ' + line;
+    const message = 'Asset: ' + assetNo + ' is back up and running.';
+
+    const res = await fetch(API_BASE + '/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, message, url: 'https://prestige-bullmer-downtime.letlhogonolo-lesomo.workers.dev/' })
+    });
+
+    if (!res.ok) console.warn('Resolved-notification error:', await res.text());
+  } catch(e) {
+    console.warn('Resolved-notification send failed:', e);
+  }
+}
+
+populateConfigDrivenSelects();
+
+window.addEventListener('load', () => {
+  setTimeout(checkNotificationPrompt, 1500);
+});
+
+window.addEventListener('load', async () => {
+  const params = new URLSearchParams(window.location.search);
+  const jobParam = params.get('job');
+  if (!jobParam) return;
+  const jobId = parseInt(jobParam, 10);
+  if (!jobId) return;
+
+  await loadMechanicScreen();
+  if (allJobs.some(j => j.id === jobId)) {
+    openJobDetail(jobId);
+  } else {
+    showToast('That job card could not be found — it may already be closed.', 'error');
+  }
+});
+</script>
+</body>
+</html>
